@@ -62,15 +62,11 @@ class BidrectionalMemory(torch.nn.Module):
         # the memory has a set of position sensors that are randomly distributed on the unit sphere
         # these will not change over time TODO -- should they be optimized to minimize retrieval faults?
         # note these keys are on the first orthant of the unit sphere
-        key_base = normalize_location(torch.randn(memory_size, embed_dim))
+        key_base = torch.randn(memory_size, embed_dim)
+        key_base = key_base / torch.norm(key_base, dim=-1, keepdim=True)
 
         self.memory_keys = torch.nn.Buffer(key_base)
-
-
-        key_distances = torch.arccos(key_base @ key_base.transpose(0, 1))  # (memory_size, memory_size), between 0 and 1
-        self.memory_keys_distances = torch.nn.Buffer(key_distances)
         self.memory_values = torch.nn.Buffer(torch.zeros(batch_size, memory_size, embed_dim))
-        self.memory_values_spherical = torch.nn.Buffer(normalize_location(self.memory_values))
 
         self.query_proj = torch.nn.Linear(query_dim, embed_dim, bias=False)
         self.key_in_proj = torch.nn.Linear(query_dim, embed_dim, bias=False)
@@ -117,20 +113,20 @@ class BidrectionalMemory(torch.nn.Module):
         """
         score_exponent = 1.0
 
-        random_keys = normalize_location(self.key_in_proj(torch.randn(min([self.memory_size, 1000]), 1, self.query_dim)))
+        random_keys = self.key_in_proj(torch.randn(min([self.memory_size, 1000]), 1, self.query_dim))
         random_scores = self.score(random_keys, self.memory_keys[None, ...], exponent=score_exponent)
         keys_written = (random_scores >= self.threshold).sum(dim=-1).float().mean().item()
 
         # note: Binary search would be faster, but this is good enough for now
         while not (-tolerance  < (keys_written - keys_written_target) < tolerance):
-            print(f"score exponent: {score_exponent}, keys written: {keys_written}, target: {keys_written_target}")
+            # print(f"score exponent: {score_exponent}, keys written: {keys_written}, target: {keys_written_target}")
             if keys_written > keys_written_target:
                 score_exponent *= 2.0
             else:
                 score_exponent *= 0.99
             
             self.avg_keys_written = 0.0
-            random_keys = normalize_location(self.key_in_proj(torch.randn(min([self.memory_size, 1000]), 1, self.query_dim)))
+            random_keys = self.key_in_proj(torch.randn(min([self.memory_size, 1000]), 1, self.query_dim))
             random_scores = self.score(random_keys, self.memory_keys[None, ...], exponent=score_exponent)
             keys_written = (random_scores >= self.threshold).sum(dim=-1).float().mean().item()
 
@@ -166,7 +162,10 @@ class BidrectionalMemory(torch.nn.Module):
         if keys.shape[0] == 1:
             keys = keys.repeat(queries.shape[0], 1, 1)
 
-        scores = torch.bmm(queries, keys.transpose(1, 2)).pow(exponent)
+        scores = torch.exp(self.factor * torch.bmm(queries, keys.transpose(1, 2)))
+
+        scores = scores / scores.max(dim=-1, keepdim=True).values
+        scores = scores.pow(exponent)
 
         if suppress is not None:
             # suppress should be (batch_size, num_queries, max_suppressed)
@@ -182,7 +181,7 @@ class BidrectionalMemory(torch.nn.Module):
 
         return scores
 
-    def read(self, queries: torch.Tensor, suppress: torch.LongTensor=None, threshold: float=None, spherical_query: bool=False):
+    def read(self, queries: torch.Tensor, suppress: torch.LongTensor=None, threshold: float=None):
         """
         Read from the memory cache by keys. Allows suppression of certain keys.
 
@@ -199,17 +198,12 @@ class BidrectionalMemory(torch.nn.Module):
         if self.query_dim != self.embed_dim:
             queries = self.query_proj(queries)
 
-        if spherical_query:
-            queries_spherical = queries
-        else:
-            queries_spherical = normalize_location(queries)
-
         # scores has shape (batch_size, num_queries, num_keys)
-        scores = self.score(queries_spherical, self.memory_keys[None, ...], suppress, threshold)
+        scores = self.score(queries, self.memory_keys[None, ...].detach(), suppress, threshold)
         weights = scores / scores.sum(dim=-1, keepdim=True)
 
         # pre_values has shape (batch_size, num_queries, value_dim)
-        pre_values = torch.bmm(weights, self.memory_values)
+        pre_values = torch.bmm(weights, self.memory_values.detach())
 
         if self.value_dim != self.embed_dim:
             values = self.read_proj(pre_values)
@@ -231,13 +225,16 @@ class BidrectionalMemory(torch.nn.Module):
         :param threshold: The threshold for the match scores. Default is self.threshold. Results with scores below this threshold are ignored.
         :return: values, indices, number of results found, and match scores for each query.
         """
+        target_values = values[..., None, :].expand(-1, -1, num_results, -1).view(self.batch_size, -1, self.value_dim).detach()
+
         if threshold is None:
             threshold = self.threshold
-
-        values_spherical = normalize_location(self.write_proj(values))
+     
+        """
+        values_in = self.write_proj(values)
 
         # scores has shape (batch_size, num_queries, memory_size) and is between 0 and 1
-        scores = self.score(values_spherical, self.memory_values_spherical, suppress, threshold)
+        scores = self.score(values_in, self.memory_values, suppress, threshold)
 
         # now on-center off-surround competition to select a diverse match set
         # based on the distances between the keys
@@ -256,32 +253,48 @@ class BidrectionalMemory(torch.nn.Module):
         # get the top k results for each query, result is (batch_size, num_queries, num_results)
         scores, indices = torch.topk(scores, k=num_results, dim=-1, largest=True, sorted=True)
 
+        print(f"dp at 0,0: {(self.memory_values[0,indices[0,0,0], :] * values_in[0,0,:]).sum().item()}")
+
         # pull the values from self.memory_keys using the indices; has shape (batch_size, num_queries, num_results, embed_dim)
         proposed_keys = torch.nn.functional.embedding(indices, self.memory_keys, padding_idx=self.memory_padding_index)
+        """
 
-        proposed_keys = proposed_keys.view(self.batch_size, -1, self.embed_dim + 1)
-        proposed_keys.requires_grad = True
+        proposed_weights = torch.randn(self.batch_size, values.shape[1], 100*num_results, self.memory_size).abs()
+        proposed_weights = proposed_weights / proposed_weights.sum(dim=-1, keepdim=True)
 
-        target_values = values[..., None, :].expand(-1, -1, num_results, -1).view(self.batch_size, -1, self.value_dim)
 
-        for i in range(5):
-            proposed_values = self.read(proposed_keys, threshold=threshold, spherical_query=True)
-            error = torch.norm(proposed_values - target_values, dim=-1)
-            print(f"{i} error {error.detach().cpu().numpy().tolist()}")
-            grad = torch.autograd.grad(error.sum(), proposed_keys, create_graph=True)[0]
-            proposed_keys = proposed_keys - 0.01 * grad
+        target_values = values[..., None, :].expand(-1, -1, 100*num_results, -1).view(self.batch_size, -1, self.value_dim).detach()
 
-        proposed_keys = proposed_keys.view(self.batch_size, values.shape[1], num_results, self.embed_dim + 1)
+        proposed_weights = proposed_weights.view(self.batch_size, -1, self.memory_size)
+        proposed_weights.requires_grad = True
+        proposed_keys = torch.bmm(proposed_weights, self.memory_keys[None, ...].detach())
 
-        output_keys = self.key_out_proj(unnormalize_location(proposed_keys))
+        for i in range(50):
+            proposed_values = self.read(proposed_keys, threshold=threshold)
+            alignment = (proposed_values * target_values).sum(dim=-1)
+            grad = torch.autograd.grad(alignment.sum(), proposed_weights, create_graph=True)[0]
+            print(f"{i} alignment {alignment.detach().cpu().numpy().tolist()} grad {grad.max().item()}, {grad.min().item()}")
+            proposed_weights = (proposed_weights + grad).clone()
+            proposed_weights = proposed_weights.clamp(min=0)
+            proposed_weights = proposed_weights / proposed_weights.sum(dim=-1, keepdim=True)
+            proposed_keys = torch.bmm(proposed_weights, self.memory_keys[None, ...].detach())
 
-        found = (scores > threshold).sum(dim=-1)
+        proposed_keys = proposed_keys.view(self.batch_size, values.shape[1], 100*num_results, self.embed_dim)
+        alignment = alignment.view(self.batch_size, values.shape[1], 100*num_results)
 
-        return output_keys, indices, found, scores
+        best_indices = torch.topk(alignment, k=num_results, dim=-1, largest=True, sorted=True).indices
+        proposed_keys = proposed_keys.gather(dim=-2, index=best_indices[..., None].expand(-1, -1, -1, self.embed_dim))
+        
+        proposed_values = self.read(proposed_keys.view(self.batch_size, -1, self.value_dim), threshold=threshold).view(self.batch_size, -1, num_results, self.value_dim)
+        target_values = values[..., None, :].expand(-1, -1, num_results, -1).view(self.batch_size, -1, self.value_dim).detach()
+
+        alignment = (proposed_values * target_values).sum(dim=-1)
+        print(f"final alignment: {alignment.detach().cpu().numpy().tolist()}")
+        return proposed_keys
 
 
     @torch.no_grad()
-    def write(self, keys: torch.Tensor, values: torch.Tensor, suppress: torch.LongTensor=None, threshold: float=None, epsilon: float=1e-6):
+    def write(self, keys: torch.Tensor, values: torch.Tensor, suppress: torch.LongTensor=None, threshold: float=None, epsilon: float=1e-6, update_factor: float=0.1, debug: bool=False):
         """
         Write to the memory cache. 
 
@@ -298,52 +311,37 @@ class BidrectionalMemory(torch.nn.Module):
             threshold = self.threshold
 
         # scores & weights have shape (batch_size, num_keys, memory_size)
-        keys_spherical = normalize_location(self.key_in_proj(keys))
-        scores = self.score(keys_spherical, self.memory_keys[None, ...], suppress, threshold)
+        keys_in = self.key_in_proj(keys)
+        scores = self.score(keys_in, self.memory_keys[None, ...], suppress, threshold)
         weights = scores / scores.sum(dim=-1, keepdim=True)
+
+        active_indices = weights > epsilon
+        total_active = active_indices.float().sum(dim=-1, keepdim=True)
 
         # prior_values & new_values have shape (batch_size, num_keys, embed_dim)
         prior_values = torch.bmm(weights, self.memory_values)
         new_values = self.write_proj(values)
 
-        # now our updating deltas have shape (batch_size, memory_size, embed_dim)
-        weighted_new_values = torch.bmm(weights.transpose(1, 2), new_values)
+        multiplier = torch.where(weights > epsilon, 1 / (total_active * weights), 0)
 
-        # this factor preserves the prior values and has shape (batch_size, num_keys)
-        factor = 1 - weights.pow(2).sum(dim=-1)
+        delta = torch.bmm(multiplier.transpose(1, 2), new_values - prior_values)
 
-        # this implements an update rule v' = w v_new + (1 - w^T w) (v_new / v_prior) v
-        # where v is self.memory_values, w is weights, v_new is new_values, v_prior is prior_values
-        # this rule guarantess the a read of the new values will return the new values while preserving the prior values
-        # and storing the new values predominantly in the keys that were most similar to the query point
-        extra_new_values = factor[..., None] * new_values * (new_values / prior_values)
+        if debug:
+            print(f"delta min: {delta.min().item()}, max: {delta.max().item()}; update factor: {update_factor}")
 
-        # avoid division by zero in two different ways, in which case we just write the new values
-        condition = (factor[..., None] > epsilon) and (prior_values > epsilon)
-        new_values = torch.where(condition, weighted_new_values + extra_new_values, new_values)
+        self.memory_values = self.memory_values + update_factor * torch.nan_to_num(delta)
 
-        # TODO: make sparse updates, and use scatter to update the memory values
-
-        max_weight = weights.max(dim=1).values  # (batch_size, memory_size)
-        condition = (max_weight > epsilon)[..., None]
-        print(f"condition shape {condition.shape}, writing to {condition.sum(dim=-2).squeeze().detach().cpu().numpy().tolist()} keys")
-        new_values = torch.where(condition, new_values, self.memory_values)
-        new_values_spherical = torch.where(condition, normalize_location(new_values), self.memory_values_spherical)
-
-        keys_written = condition.sum(dim=-2).float().mean().item()
+        keys_written = total_active.float().mean().item()
         self.avg_keys_written = self.avg_keys_ema_factor * self.avg_keys_written + (1 - self.avg_keys_ema_factor) * keys_written
-
-        self.memory_values = new_values
-        self.memory_values_spherical = new_values_spherical
-
 
 
 if __name__ == "__main__":
     
+    batch_size = 1000
     query_dim = 32
     value_dim = 32
     embed_dim = 32
-    memory_size = 2048
+    memory_size = 2**11
 
     # test normalizations
     location = torch.randn(1000, embed_dim)
@@ -357,8 +355,12 @@ if __name__ == "__main__":
 
     memory = BidrectionalMemory(query_dim, value_dim, embed_dim, memory_size)
 
-    queries = torch.randn(16, query_dim)
-    values = torch.randn(16, value_dim)
+    queries = torch.randn(batch_size, query_dim)
+    values = torch.randn(batch_size, value_dim)
+
+    # make values sparse by setting 75% of the values to 0
+    values = torch.where(torch.rand(batch_size, value_dim) < 0.75, values, torch.zeros_like(values))
+    values = values / torch.norm(values, dim=-1, keepdim=True)
 
     print("queries: ", queries[0].cpu().numpy().tolist())
     print("values: ", values[0].cpu().numpy().tolist())
@@ -366,16 +368,22 @@ if __name__ == "__main__":
     initial = memory.read(queries[:1, None, :]).squeeze().detach()
     print("initial read: ", torch.norm(initial).item())
 
-    memory.write(queries[:1, None, :], values[:1, None, :])
+    memory.write(queries[:1, None, :], values[:1, None, :], update_factor=1.0)
     value_read = memory.read(queries[:1, None, :]).squeeze()
     error = torch.norm(value_read - values[0]).item()
     print(f"0 error on read after write: {error}")
 
-    for i, (query, value) in enumerate(zip(queries, values)):
-        memory.write(query[None, None, :], value[None, None, :])
-        value_read = memory.read(query[None, None, :]).squeeze()
-        error = torch.norm(value_read - value).item()
-        print(f"{i} error on read after write: {error}")
+    memory.reset()
+    steps = 1000
+    for i in range(steps):
+        update_factor = 0.25 #* (1 - (i / steps) + 1e-6)
+        assert update_factor >= 0 and update_factor <= 1.0
+        memory.write(queries[None,...], values[None,...], update_factor=update_factor)
+        value_read = memory.read(queries[None,...]).squeeze()
+        error = torch.norm(value_read - values, dim=-1)
+        if i % 100 == 0:
+            print(f"{i} mean error on read after write: {error.mean().item()}")
+            print(f"{i} % read correctly: {((error < 0.01).float().mean().item() * 100)}%")
 
     # Now read back the values
     num_clashes = 0
@@ -384,15 +392,13 @@ if __name__ == "__main__":
         error = torch.norm(value_read - value).item()
         if error > 0.01:
             num_clashes += 1
-        print(f"{i} error on read after subsequeunt writes: {error}")
 
     print(f"number of clashes: {num_clashes}")
 
-    keys, indices, found, scores = memory.search(values[:1, None, :], diversity_steps=0, num_results=5)
-    print("search: ", keys[0].squeeze().detach().cpu().numpy().tolist())
-    print("indices: ", indices[0].squeeze().detach().cpu().numpy().tolist())
-    print("found: ", found[0].squeeze().detach().cpu().numpy().tolist())
-    print("scores: ", scores[0].squeeze().detach().cpu().numpy().tolist())
+    keys = memory.search(values[:1, None, :], diversity_steps=0, num_results=5)
+    print(f"target: {queries[0].detach().cpu().numpy().tolist()}")
+    for i in range(5):
+        print(f"search {i} ({torch.norm(queries[0] - keys[0,0,i]):.4f}): ", keys[0,0,i].squeeze().detach().cpu().numpy().tolist())
 
     print("avg keys written: ", memory.avg_keys_written)
 
