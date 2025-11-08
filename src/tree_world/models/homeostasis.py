@@ -157,5 +157,3 @@ class HomeostaticController(torch.nn.Module):
 
         return movement_action, heading_action
 
-
-
