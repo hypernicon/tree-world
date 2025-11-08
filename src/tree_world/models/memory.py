@@ -1,3 +1,4 @@
+import math
 import torch
 
 
@@ -5,7 +6,9 @@ def geodesic_distance(location1: torch.Tensor, location2: torch.Tensor):
     """
     Calculate the geodesic distance between two points on the unit sphere.
     """
-    return torch.acos((location1*location2).sum(dim=-1)) / torch.pi
+    dot = (location1 * location2).sum(dim=-1)
+    dot = dot.clamp(-1.0, 1.0)
+    return torch.acos(dot) / torch.pi
 
 
 def normalize_location(location: torch.Tensor, temperature: float=0.25):
@@ -34,11 +37,11 @@ def make_key_grid(embed_dim: int, points_per_dim: int, epsilon: float=1e-6):
     points = points / (1 - points.abs())
 
     # then, create a grid of points by taking the cartesian product of the points
-    grid = torch.cartesian_product([points] * embed_dim)
+    grid = torch.cartesian_prod([points] * embed_dim)
     return grid, grid.shape[0]
 
 
-class BidrectionalMemory(torch.nn.Module):
+class BidirectionalMemory(torch.nn.Module):
     """
     This is a memory cache to store pairs of (key, value) embeddings.
 
@@ -48,358 +51,217 @@ class BidrectionalMemory(torch.nn.Module):
     :param dropout: The dropout rate.
 
     """
-    def __init__(self, query_dim: int, value_dim: int, embed_dim: int, memory_size: int, dropout: float=0.1, batch_size: int=1,
-                 matching_keys_target: int=8, matching_keys_tolerance: float=0.5, threshold: float=0.5):
+    def __init__(self, location_dim: int, sensory_dim: int, embed_dim: int, batch_size: int=1):
         super().__init__()
-        self.query_dim = query_dim
-        self.value_dim = value_dim 
+        self.location_dim = location_dim
+        self.sensory_dim = sensory_dim
         self.embed_dim = embed_dim
         self.batch_size = batch_size
-        self.memory_size = memory_size
-        self.dropout = dropout
-        self.memory_padding_index = 0
 
-        # the memory has a set of position sensors that are randomly distributed on the unit sphere
-        # these will not change over time TODO -- should they be optimized to minimize retrieval faults?
-        # note these keys are on the first orthant of the unit sphere
-        key_base = torch.randn(memory_size, embed_dim)
-        key_base = key_base / torch.norm(key_base, dim=-1, keepdim=True)
+        self.sensory_proj = torch.nn.Linear(sensory_dim, embed_dim, bias=False)
+        self.sensory_read_proj = torch.nn.Linear(embed_dim, sensory_dim, bias=False)
 
-        self.memory_keys = torch.nn.Buffer(key_base)
-        self.memory_values = torch.nn.Buffer(torch.zeros(batch_size, memory_size, embed_dim))
+        self.memory_locations = None
+        self.memory_senses = None
+        self.memory_location_sds = None
 
-        self.query_proj = torch.nn.Linear(query_dim, embed_dim, bias=False)
-        self.key_in_proj = torch.nn.Linear(query_dim, embed_dim, bias=False)
-        self.key_out_proj = torch.nn.Linear(embed_dim, query_dim, bias=False)
-        self.write_proj = torch.nn.Linear(value_dim, embed_dim, bias=False)
-        self.read_proj = torch.nn.Linear(embed_dim, value_dim, bias=False)
-        self.align_read_write_projections()
-
-        self.factor = embed_dim ** -0.5
-
-        self.score_exponent = 5.0
-        self.threshold = threshold
-
-        self.avg_keys_written = 0.0
-        self.avg_keys_ema_factor = 0.9
-        self.calibrate(keys_written_target=matching_keys_target, tolerance=matching_keys_tolerance)
-
-    def align_read_write_projections(self):
-        """
-        Align the read projection to the write projection by minimizing the mean squared error between the two.
-
-        Initialize to the pseudo-inverse of the write projection.
-        """
-        if self.value_dim == self.embed_dim:
-            self.write_proj.weight.data = torch.eye(self.embed_dim)
-            self.read_proj.weight.data = torch.eye(self.embed_dim)
-        
-        else:
-
-            pseudo_inverse = torch.linalg.pinv(self.write_proj.weight.data)
-            self.read_proj.weight.data = pseudo_inverse
-
-        if self.query_dim == self.embed_dim:
-            self.key_in_proj.weight.data = torch.eye(self.embed_dim)
-            self.key_out_proj.weight.data = torch.eye(self.embed_dim)
-        
-        else:
-            pseudo_inverse = torch.linalg.pinv(self.key_in_proj.weight.data)
-            self.key_out_proj.weight.data = pseudo_inverse
-
-    def calibrate(self, keys_written_target: float=8, tolerance: float=0.5):
-        """
-        Calibrate the score exponent to achieve the desired number of keys written.
-        """
-        score_exponent = 1.0
-
-        random_keys = self.key_in_proj(torch.randn(min([self.memory_size, 1000]), 1, self.query_dim))
-        random_scores = self.score(random_keys, self.memory_keys[None, ...], exponent=score_exponent)
-        keys_written = (random_scores >= self.threshold).sum(dim=-1).float().mean().item()
-
-        # note: Binary search would be faster, but this is good enough for now
-        while not (-tolerance  < (keys_written - keys_written_target) < tolerance):
-            # print(f"score exponent: {score_exponent}, keys written: {keys_written}, target: {keys_written_target}")
-            if keys_written > keys_written_target:
-                score_exponent *= 2.0
-            else:
-                score_exponent *= 0.99
-            
-            self.avg_keys_written = 0.0
-            random_keys = self.key_in_proj(torch.randn(min([self.memory_size, 1000]), 1, self.query_dim))
-            random_scores = self.score(random_keys, self.memory_keys[None, ...], exponent=score_exponent)
-            keys_written = (random_scores >= self.threshold).sum(dim=-1).float().mean().item()
-
-        print(f"BidrectionalMemory calibrated score exponent: {score_exponent} with {keys_written} keys written")
-        
-        self.avg_keys_written = keys_written
-        self.score_exponent = score_exponent
+        self.sensory_factor = sensory_dim ** -0.5
+        self.location_factor = location_dim ** -0.5
 
     def reset(self):
-        self.memory_values.data.zero_()
+        self.memory_locations = None
+        self.memory_senses = None
+        self.memory_location_sds = None
 
-    def score(self, queries: torch.Tensor, keys: torch.Tensor, suppress: torch.LongTensor=None, threshold: float=None, exponent: float=None):
+    def break_training_graph(self):
+        if self.memory_locations is not None:
+            self.memory_locations = self.memory_locations.detach()
+        if self.memory_senses is not None:
+            self.memory_senses = self.memory_senses.detach()
+        if self.memory_location_sds is not None:
+            self.memory_location_sds = self.memory_location_sds.detach()
+
+    def score(self, query: torch.Tensor, keys: torch.Tensor, factor: float=1.0):
         """
-        Score the queries against the keys.
+        Score a single queries against the keys.
 
-        Note queries and keys are on the unit sphere, but values are in free R^d (d=embed_dim, so this is down-projected).
-
-        :param queries: The queries to read from the memory cache. Has shape (batch_size, num_queries, embed_dim).
+        :param query: The query to read from the memory cache. Has shape (batch_size, embed_dim) or (batch_size, num_queries, embed_dim).
         :param keys: The keys to read from the memory cache. Has shape (batch_size, num_keys, embed_dim).
-        :param suppress: The indices of the keys to suppress. Has shape (batch_size, num_queries, max_suppressed), None by default. Zeroes can always be suppressed to pad the tensor
-        :param threshold: The threshold for the match scores. Default is self.threshold. Results with scores below this threshold are ignored.
-        :return: The scores. Has shape (batch_size, num_queries, num_keys).
+        :return: The scores. Has shape (batch_size, num_keys) or (batch_size, num_queries, num_keys).
         """
-        if exponent is None:
-            exponent = self.score_exponent
-
-        if threshold is None:
-            threshold = self.threshold
-
-        # compute the alignment scores
-        # due to normalization, this is a number in [0, 1]
-        # scores = (batch_size, num_queries, num_keys)
-        if keys.shape[0] == 1:
-            keys = keys.repeat(queries.shape[0], 1, 1)
-
-        scores = torch.exp(self.factor * torch.bmm(queries, keys.transpose(1, 2)))
-
-        scores = scores / scores.max(dim=-1, keepdim=True).values
-        scores = scores.pow(exponent)
-
-        if suppress is not None:
-            # suppress should be (batch_size, num_queries, max_suppressed)
-            scores = scores.scatter(dim=-1, index=suppress, src=0)
-
-        if threshold is not None and threshold > 0:
-            max_score = scores.max(dim=-1).values  # (batch_size, num_queries)
-            threshold = torch.where(max_score < threshold, 0.9 * max_score, threshold)[..., None]
-            scores = scores.masked_fill(scores < threshold, 0)
-
-        # active_indices = scores.squeeze().nonzero().squeeze()
-        # print(f"scores {scores.shape}: {active_indices.detach().cpu().numpy().tolist()}")
-
-        return scores
-
-    def read(self, queries: torch.Tensor, suppress: torch.LongTensor=None, threshold: float=None):
-        """
-        Read from the memory cache by keys. Allows suppression of certain keys.
-
-        Note queries and keys are on the unit sphere, but values are in free R^d (d=embed_dim, so this is down-projected).
-
-        :param queries: The queries to read from the memory cache. Has shape (batch_size, num_queries, query_dim).
-        :param suppress: The indices of the keys to suppress. Has shape (batch_size, num_queries, max_suppressed), None by default. Zeroes can always be suppressed to pad the tensor
-        :param threshold: The threshold for the match scores. Default is self.threshold. Results with scores below this threshold are ignored.
-        :return: values, indices, number of results found, and match scores for each query.
-        """
-        if threshold is None:
-            threshold = self.threshold
-
-        if self.query_dim != self.embed_dim:
-            queries = self.query_proj(queries)
-
-        # scores has shape (batch_size, num_queries, num_keys)
-        scores = self.score(queries, self.memory_keys[None, ...].detach(), suppress, threshold)
-        weights = scores / scores.sum(dim=-1, keepdim=True)
-
-        # pre_values has shape (batch_size, num_queries, value_dim)
-        pre_values = torch.bmm(weights, self.memory_values.detach())
-
-        if self.value_dim != self.embed_dim:
-            values = self.read_proj(pre_values)
+        squeeze = False
+        if query.ndim < keys.ndim:
+            query = query[..., None, :]
+            squeeze = True
+        return factor * torch.bmm(query, keys.transpose(-2, -1))
+        if squeeze:
+            return result.squeeze(dim=-2)
         else:
-            values = pre_values
+            return result
 
-        return values
-
-
-    def search(self, values: torch.Tensor, num_results: int=1, suppress: torch.LongTensor=None, threshold: float=None,
-               center_factor: float=0.01, surround_factor: float=0.1, diversity_steps: int=5, mix_factor: float=0.2,
-               exponent: float=None):
+    def get_location_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, mask_diagonal: bool=False, raw_weights: bool=False):
         """
-        Search the values for the most similar values to queries, returning the closest matching keys.
+        Get the affinity of a location to the memory locations.
 
-        :param values: The values to search the memory cache for. Has shape (batch_size, num_queries, value_dim).
-        :param num_results: The number of results to return for each query, one by default.
-        :param suppress: The indices of the keys to suppress. Has shape (batch_size, num_queries, max_suppressed), None by default.
-        :param threshold: The threshold for the match scores. Default is self.threshold. Results with scores below this threshold are ignored.
-        :return: values, indices, number of results found, and match scores for each query.
+        :param location: The location to get the affinity for. Has shape (batch_size, location_dim).
+        :param location_sd: The standard deviation of the location. Has shape (batch_size, location_dim).
+        :return: The affinity. Has shape (batch_size, num_keys).
         """
-        target_values = values[..., None, :].expand(-1, -1, num_results, -1).view(self.batch_size, -1, self.value_dim).detach()
+        if location.ndim < self.memory_locations.ndim:
+            squeeze = True
+            location = location[..., None, :]
 
-        if threshold is None:
-            threshold = self.threshold
-     
+        if location_sd.ndim < self.memory_location_sds.ndim:
+            location_sd = location_sd[..., None, :]
+
+
+        # shape (batch_size, num_queries, num_keys, location_dim)
+        location_delta = location[..., None, :] - self.memory_locations[..., None, :, :]
+        location_delta_sd = location_sd[..., None, :] + self.memory_location_sds[..., None, :, :]
+
+        log_location_affinity = (
+            - 0.5 * (location_delta / (location_delta_sd + 1e-8)).pow(2).sum(dim=-1) 
+            - 0.5 * math.log(2 * math.pi) * location_delta_sd.shape[-1]
+            - torch.log(location_delta_sd).sum(dim=-1)
+        )
+
+        if mask_diagonal:
+            # TODO: this will fail if num_queries != num_keys or if there is more than one batch dimension
+            eye = torch.eye(log_location_affinity.size(-2), device=log_location_affinity.device).bool()
+            log_location_affinity = log_location_affinity.masked_fill(eye.unsqueeze(0), float('-inf'))
+
+        if raw_weights:
+            return log_location_affinity
+
+        # shape (batch_size, num_queries, num_keys)
+        location_weights = torch.softmax(log_location_affinity, dim=-1)
+        location_weight_mean = location_weights.mean(dim=-1, keepdim=True)
+        location_weights = location_weights.masked_fill(location_weights < location_weight_mean, 0.0)
+        location_weights = location_weights / (location_weights.sum(dim=-1, keepdim=True) + 1e-8)
+
+        return location_weights
+    
+    def get_location_and_sensory_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor):
         """
-        values_in = self.write_proj(values)
+        Get the affinity of a location and sensory to the memory locations and senses.
+        """
+        location_affinity = self.get_location_affinity(location, location_sd, raw_weights=True)
+        sensory_affinity = self.score(sensory, self.memory_senses, factor=self.sensory_factor)
+        return location_affinity, sensory_affinity
 
-        # scores has shape (batch_size, num_queries, memory_size) and is between 0 and 1
-        scores = self.score(values_in, self.memory_values, suppress, threshold)
+    def read(self, location: torch.Tensor, location_sd: torch.Tensor):
+        """
+        Read from the memory cache by keys.
 
-        # now on-center off-surround competition to select a diverse match set
-        # based on the distances between the keys
-        # scores_center will be (batch_size, num_queries, memory_size, memory_size)
-        # this method recursively convolves with a mexican hat kernel
-        # TODO: we need 0 < center_factor < surround_factor <= 1; but what are good values?
-        # TODO: we need to operate on a sparser result set to avoid the quadratic complexity in the memory size
+        :param location: The location to read from the memory cache. Has shape (batch_size, query_dim).
+        """
+        if self.memory_locations is None:
+            return torch.zeros(location.shape[0], self.sensory_dim, device=location.device, dtype=location.dtype)
+
+        location_weights = self.get_location_affinity(location, location_sd)
+
+        # pre_sense has shape (batch_size, embed_dim)
+        pre_sense = torch.bmm(location_weights, self.memory_senses).squeeze(dim=-2)
+        sense = self.sensory_read_proj(pre_sense)
+
+        return sense
+
+    def read_location_and_sensory(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor):
+        """
+        Read from the memory cache by location and sensory.
+        """
+        sensory = self.sensory_proj(sensory)
+        location_affinity, sensory_affinity = self.get_location_and_sensory_affinity(location, location_sd, sensory)
+        affinity = location_affinity * sensory_affinity
+        scores = torch.softmax(affinity, dim=-1)
+        location_out = torch.bmm(scores, self.memory_locations).squeeze(dim=-2)
+        location_sd_out = torch.bmm(scores, self.memory_location_sds).squeeze(dim=-2)
+        sensory_out = torch.bmm(scores, self.memory_senses).squeeze(dim=-2)
+        sensory_out = self.sensory_read_proj(sensory_out)
+        return location_out, location_sd_out, sensory_out
+
+
+    def search(self, senses: torch.Tensor, num_results: int=1, threshold: float=0.1, diversity_steps: int=5, detach_locations: bool=False):
+        """
+        Search the senses for the most similar senses to queries, returning the closest matching keys.
+
+        :param senses: The senses to search for. Has shape (batch_size, num_senses, sensory_dim).
+        :param num_results: The number of results to return.
+        :param threshold: The threshold for the match scores. Default is 2.0.
+        :param diversity_steps: The number of steps to take to diversify the results. Default is 5.
+        :param detach_locations: Whether to detach the memory locationparameters from grad calculations before computing the output. Default is False.
+        :return: The top locations, the top senses, a boolean mask of whether each query was found, and the number of found queries.
+        """
+        if self.memory_senses is None:
+            return (
+                torch.zeros(self.batch_size, num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
+                torch.ones(self.batch_size, num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
+                torch.zeros(self.batch_size, num_results, self.sensory_dim, device=senses.device, dtype=senses.dtype),
+                torch.zeros(self.batch_size, num_results, device=senses.device, dtype=torch.bool),
+                torch.zeros(self.batch_size, device=senses.device, dtype=torch.long)
+            )
+
+        senses = self.sensory_proj(senses)
+
+        # scores has shape (batch_size, num_keys) or (batch_size, num_queries, num_keys)
+        memory_senses = self.memory_senses
+        scores = self.score(senses, memory_senses, factor=self.sensory_factor)
+
+        # now do attention to institute score competition among nearby locations
         if diversity_steps > 0:
-            center_kernel = torch.exp(-((self.memory_keys_distances / center_factor)**2)).unsqueeze(0).unsqueeze(1)
-            surround_kernel = torch.exp(-((self.memory_keys_distances / surround_factor)**2)).unsqueeze(0).unsqueeze(1)
+            # neighbor weights over memory locations (B, K, K)
+            memory_locations = self.memory_locations
+            memory_location_sds = self.memory_location_sds
+            if detach_locations:
+                memory_locations = memory_locations.detach()
+                memory_location_sds = memory_location_sds.detach()
+            location_weights = self.get_location_affinity(memory_locations, memory_location_sds, mask_diagonal=True)
 
-            for i in range(diversity_steps):
-                scores = scores[..., None] * center_kernel - mix_factor * scores[..., None] * surround_kernel
-                scores = scores.sum(dim=-1)
-        
-        # get the top k results for each query, result is (batch_size, num_queries, num_results)
-        scores, indices = torch.topk(scores, k=num_results, dim=-1, largest=True, sorted=True)
+            if scores.ndim < location_weights.ndim:
+                s = scores.unqueeze(-2)
+            else:
+                s = scores
 
-        print(f"dp at 0,0: {(self.memory_values[0,indices[0,0,0], :] * values_in[0,0,:]).sum().item()}")
+            s = scores
+            for _ in range(diversity_steps):
+                neighbor_mass = torch.bmm(s, location_weights.transpose(-2, -1)) # (B, Q, K)
+                s = (s - neighbor_mass).clamp_min(0)
+                s = s / (s.sum(dim=-1, keepdim=True) + 1e-12)                 # renorm
 
-        # pull the values from self.memory_keys using the indices; has shape (batch_size, num_queries, num_results, embed_dim)
-        proposed_keys = torch.nn.functional.embedding(indices, self.memory_keys, padding_idx=self.memory_padding_index)
-        """
+            if s.ndim > scores.ndim:
+                s = s.squeeze(-2)
 
-        proposed_weights = torch.randn(self.batch_size, values.shape[1], 100*num_results, self.memory_size).abs()
-        proposed_weights = proposed_weights / proposed_weights.sum(dim=-1, keepdim=True)
+            scores = s
 
+        # now scores are filered to refer to different locations, so we can pict the top results
+        num_results = min(num_results, scores.shape[1])
+        top_scores, top_indices = scores.topk(num_results, dim=-1, largest=True, sorted=True)
+        top_location_indices = top_indices[..., None].expand(-1, -1, self.location_dim)
+        top_sensory_indices = top_indices[..., None].expand(-1, -1, self.embed_dim)
+        top_locations = self.memory_locations.gather(dim=1, index=top_location_indices)
+        top_location_sds = self.memory_location_sds.gather(dim=1, index=top_location_indices)
+        top_senses = self.memory_senses.gather(dim=1, index=top_sensory_indices)
 
-        target_values = values[..., None, :].expand(-1, -1, 100*num_results, -1).view(self.batch_size, -1, self.value_dim).detach()
+        found = top_scores > threshold
+        num_found = found.long().sum(dim=-1)
 
-        proposed_weights = proposed_weights.view(self.batch_size, -1, self.memory_size)
-        proposed_weights.requires_grad = True
-        proposed_keys = torch.bmm(proposed_weights, self.memory_keys[None, ...].detach())
+        top_senses = self.sensory_read_proj(top_senses)
 
-        for i in range(50):
-            proposed_values = self.read(proposed_keys, threshold=threshold)
-            alignment = (proposed_values * target_values).sum(dim=-1)
-            grad = torch.autograd.grad(alignment.sum(), proposed_weights, create_graph=True)[0]
-            print(f"{i} alignment {alignment.detach().cpu().numpy().tolist()} grad {grad.max().item()}, {grad.min().item()}")
-            proposed_weights = (proposed_weights + grad).clone()
-            proposed_weights = proposed_weights.clamp(min=0)
-            proposed_weights = proposed_weights / proposed_weights.sum(dim=-1, keepdim=True)
-            proposed_keys = torch.bmm(proposed_weights, self.memory_keys[None, ...].detach())
+        return top_locations, top_location_sds, top_senses, found, num_found
 
-        proposed_keys = proposed_keys.view(self.batch_size, values.shape[1], 100*num_results, self.embed_dim)
-        alignment = alignment.view(self.batch_size, values.shape[1], 100*num_results)
-
-        best_indices = torch.topk(alignment, k=num_results, dim=-1, largest=True, sorted=True).indices
-        proposed_keys = proposed_keys.gather(dim=-2, index=best_indices[..., None].expand(-1, -1, -1, self.embed_dim))
-        
-        proposed_values = self.read(proposed_keys.view(self.batch_size, -1, self.value_dim), threshold=threshold).view(self.batch_size, -1, num_results, self.value_dim)
-        target_values = values[..., None, :].expand(-1, -1, num_results, -1).view(self.batch_size, -1, self.value_dim).detach()
-
-        alignment = (proposed_values * target_values).sum(dim=-1)
-        print(f"final alignment: {alignment.detach().cpu().numpy().tolist()}")
-        return proposed_keys
-
-
-    @torch.no_grad()
-    def write(self, keys: torch.Tensor, values: torch.Tensor, suppress: torch.LongTensor=None, threshold: float=None, epsilon: float=1e-6, update_factor: float=0.1, debug: bool=False):
+    def write(self, location: torch.Tensor, location_sd: torch.Tensor, sense: torch.Tensor):
         """
         Write to the memory cache. 
 
-        :param keys: The keys to write to the memory cache. Has shape (batch_size, num_keys, key_dim).
-        :param values: The values to write to the memory cache. Has shape (batch_size, num_keys, value_dim).
         """
-        if keys.shape[0] != values.shape[0]:
-            raise ValueError("The number of keys and values must be the same.")
-        
-        if keys.shape[0] == 0:
-            return 
+        sense = self.sensory_proj(sense)
 
-        if threshold is None:
-            threshold = self.threshold
-
-        # scores & weights have shape (batch_size, num_keys, memory_size)
-        keys_in = self.key_in_proj(keys)
-        scores = self.score(keys_in, self.memory_keys[None, ...], suppress, threshold)
-        weights = scores / scores.sum(dim=-1, keepdim=True)
-
-        active_indices = weights > epsilon
-        total_active = active_indices.float().sum(dim=-1, keepdim=True)
-
-        # prior_values & new_values have shape (batch_size, num_keys, embed_dim)
-        prior_values = torch.bmm(weights, self.memory_values)
-        new_values = self.write_proj(values)
-
-        multiplier = torch.where(weights > epsilon, 1 / (total_active * weights), 0)
-
-        delta = torch.bmm(multiplier.transpose(1, 2), new_values - prior_values)
-
-        if debug:
-            print(f"delta min: {delta.min().item()}, max: {delta.max().item()}; update factor: {update_factor}")
-
-        self.memory_values = self.memory_values + update_factor * torch.nan_to_num(delta)
-
-        keys_written = total_active.float().mean().item()
-        self.avg_keys_written = self.avg_keys_ema_factor * self.avg_keys_written + (1 - self.avg_keys_ema_factor) * keys_written
-
-
-if __name__ == "__main__":
-    
-    batch_size = 1000
-    query_dim = 32
-    value_dim = 32
-    embed_dim = 32
-    memory_size = 2**11
-
-    # test normalizations
-    location = torch.randn(1000, embed_dim)
-    location_spherical = normalize_location(location)
-    spherical_dist = geodesic_distance(location_spherical[..., None, :], location_spherical[None, ..., :])
-    relocation = unnormalize_location(location_spherical)
-    error = torch.norm(relocation - location, dim=-1).mean().item()
-    print(f"error on re-normalization: {error}")
-    print(f"spherical distance: {spherical_dist.shape} -- {torch.nan_to_num(spherical_dist).mean().item()}")
-    print(f"avg similarity: {(location_spherical @ location_spherical.transpose(0, 1)).mean().item()}")
-
-    memory = BidrectionalMemory(query_dim, value_dim, embed_dim, memory_size)
-
-    queries = torch.randn(batch_size, query_dim)
-    values = torch.randn(batch_size, value_dim)
-
-    # make values sparse by setting 75% of the values to 0
-    values = torch.where(torch.rand(batch_size, value_dim) < 0.75, values, torch.zeros_like(values))
-    values = values / torch.norm(values, dim=-1, keepdim=True)
-
-    print("queries: ", queries[0].cpu().numpy().tolist())
-    print("values: ", values[0].cpu().numpy().tolist())
-
-    initial = memory.read(queries[:1, None, :]).squeeze().detach()
-    print("initial read: ", torch.norm(initial).item())
-
-    memory.write(queries[:1, None, :], values[:1, None, :], update_factor=1.0)
-    value_read = memory.read(queries[:1, None, :]).squeeze()
-    error = torch.norm(value_read - values[0]).item()
-    print(f"0 error on read after write: {error}")
-
-    memory.reset()
-    steps = 1000
-    for i in range(steps):
-        update_factor = 0.25 #* (1 - (i / steps) + 1e-6)
-        assert update_factor >= 0 and update_factor <= 1.0
-        memory.write(queries[None,...], values[None,...], update_factor=update_factor)
-        value_read = memory.read(queries[None,...]).squeeze()
-        error = torch.norm(value_read - values, dim=-1)
-        if i % 100 == 0:
-            print(f"{i} mean error on read after write: {error.mean().item()}")
-            print(f"{i} % read correctly: {((error < 0.01).float().mean().item() * 100)}%")
-
-    # Now read back the values
-    num_clashes = 0
-    for i, (query, value) in enumerate(zip(queries, values)):
-        value_read = memory.read(query[None, None, :]).squeeze()
-        error = torch.norm(value_read - value).item()
-        if error > 0.01:
-            num_clashes += 1
-
-    print(f"number of clashes: {num_clashes}")
-
-    keys = memory.search(values[:1, None, :], diversity_steps=0, num_results=5)
-    print(f"target: {queries[0].detach().cpu().numpy().tolist()}")
-    for i in range(5):
-        print(f"search {i} ({torch.norm(queries[0] - keys[0,0,i]):.4f}): ", keys[0,0,i].squeeze().detach().cpu().numpy().tolist())
-
-    print("avg keys written: ", memory.avg_keys_written)
-
+        if self.memory_locations is None:
+            self.memory_locations = location[:, None, :]
+            self.memory_location_sds = location_sd[:, None, :]
+            self.memory_senses = sense[:, None, :]
+        else:
+            self.memory_locations = torch.cat([self.memory_locations, location[:, None, :]], dim=-2)
+            self.memory_location_sds = torch.cat([self.memory_location_sds, location_sd[:, None, :]], dim=-2)
+            self.memory_senses = torch.cat([self.memory_senses, sense[:, None, :]], dim=-2)
     

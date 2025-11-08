@@ -23,14 +23,19 @@ class TreeWorldConfig:
     # Sensory inputs
     sensory_embedding_dim: int = 1024
     sensory_embedding_model: str = "BAAI/bge-large-en-v1.5"
+    
+    location_dim: int = 16
+    embed_dim: int = 32
+    dropout: float = 0.1
+    num_guesses: int = 5
 
     # Sensor
     sensor_type: str = "SimpleSensor"
     max_sense_distance: float = 100.0
-    heading_tolerance: float = 0.75
+    heading_tolerance: float = 0.9
 
     # Trees
-    num_trees: int = 25
+    num_trees: int = 50
     tree_spacing: float = 100
     regrow_every: int = 1000
     max_fruit: int = 5
@@ -116,7 +121,7 @@ class SimpleSensor(Sensor):
 
         close_trees = dot_products > self.heading_tolerance
         if not close_trees.any():
-            print(f"No tree found along heading {heading.numpy().tolist()}, returning None")
+            # print(f"No tree found along heading {heading.numpy().tolist()}, returning None")
             return None, None
 
         indices = torch.arange(len(world.trees))[close_trees]
@@ -128,10 +133,10 @@ class SimpleSensor(Sensor):
 
         
         if distance > self.max_distance:
-            print(f"Tree found at distance {distance} along heading {heading.numpy().tolist()} but is too far, returning None")
+            # print(f"Tree found at distance {distance} along heading {heading.numpy().tolist()} but is too far, returning None")
             return None, None
 
-        print(f"Tree ({world.trees[tree_index].name}) found at distance {distance} and index {tree_index}")
+        # print(f"Tree ({world.trees[tree_index].name}) found at distance {distance} and index {tree_index}")
         return distance, world.trees[tree_index]
 
     @classmethod
@@ -140,15 +145,19 @@ class SimpleSensor(Sensor):
 
 
 class AgentModel:
-    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, dim: int=2, can_see_fruit_distance: float=10.0):
+    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, dim: int=2, can_see_fruit_distance: float=10.0, max_distance: float=100.0):
         self.sensory_embedding_dim = sensory_embedding_dim
         self.sensory_embedding_model = sensory_embedding_model
         self.dim = dim
 
         self.can_see_fruit_distance = can_see_fruit_distance
+        self.max_distance = max_distance
 
         self.setup_tree_embeddings()
 
+        self.last_heading_delta = None
+
+    def reset(self):
         self.last_heading_delta = None
 
     def setup_tree_embeddings(self):
@@ -188,7 +197,8 @@ class AgentModel:
         self.last_heading_delta = orthogonal_direction
         return orthogonal_direction
 
-    def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor):
+    def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
+                   agent_location: torch.Tensor=None, obj_location: torch.Tensor=None):
         if distance is None:
             print("No tree found, randomizing heading and position delta")
             # pick an orthogonal direction to the heading
@@ -205,7 +215,7 @@ class AgentModel:
     
     @classmethod
     def from_config(cls, config: TreeWorldConfig):
-        return cls(config.sensory_embedding_dim, config.sensory_embedding_model, config.dim, config.can_see_fruit_distance)
+        return cls(config.sensory_embedding_dim, config.sensory_embedding_model, config.dim, config.can_see_fruit_distance, config.max_sense_distance)
 
 
 class Agent:
@@ -237,6 +247,16 @@ class Agent:
         self.fruit_eaten = 0
         self.poisonous_fruit_eaten = 0
 
+        self.total_movement = 00
+
+    def reset(self):
+        self.health = self.max_health
+        self.fruit_eaten = 0
+        self.poisonous_fruit_eaten = 0
+        self.model.reset()
+        self.total_movement = 0.0
+
+
     def step(self, world: 'TreeWorld'):
         distance, tree = self.sensor.sense(world, self.location, self.heading)
         embedding = tree.embedding if tree is not None else None
@@ -245,14 +265,15 @@ class Agent:
 
 
         if distance is not None and distance < self.eat_distance:
-            print(f"Eating fruit from tree {tree.name} with fruit amount {num_fruit}")
+            # print(f"Eating fruit from tree {tree.name} with fruit amount {num_fruit}")
             self.fruit_eaten += 1
             if tree.is_poisonous:
                 self.poisonous_fruit_eaten += 1
             self.eat_fruit(1, tree.is_poisonous)
             tree.harvest_fruit()
         
-        position_delta, self.heading = self.model.get_action(distance, embedding, self.heading, health=self.health / self.max_health)
+        position_delta, self.heading = self.model.get_action(distance, embedding, self.heading, self.health / self.max_health,
+                                                             self.location, tree.location if tree is not None else None)
 
         if position_delta is None:
             self.rest()
@@ -262,7 +283,8 @@ class Agent:
     def move(self, direction: torch.Tensor):
         self.location = self.location + direction
         self.health = self.health - self.move_cost
-    
+        self.total_movement = self.total_movement + torch.norm(direction)
+
     def rest(self):
         self.health = self.health - self.rest_cost
 
@@ -285,6 +307,9 @@ class Agent:
         elif config.model_type == "StateBasedAgentWithDriveEmbedding":
             from tree_world.agents import StateBasedAgentWithDriveEmbedding
             model = StateBasedAgentWithDriveEmbedding.from_config(config)
+        elif config.model_type == "TEMAgent":
+            from tree_world.agents import TEMAgent
+            model = TEMAgent.from_config(config)
         else:
             raise ValueError(f"Unknown model type: {config.model_type}")
 
@@ -313,29 +338,86 @@ class TreeWorld:
     The agent has a sensor that can detect the distance to a tree and the embedding of the tree.
     """
 
-    def __init__(self, trees: List[Tree], agent: Agent):
+    def __init__(self, trees: List[Tree], agent: Agent, config: TreeWorldConfig):
         self.trees = trees
         self.agent = agent
         self.tree_locations = torch.stack([tree.location for tree in trees])
-
+        self.config = config
         self.record_positions = []
         self.record_healths = []
 
+        self.last_target_location_estimated = None
+
+        self.tree_names, self.tree_embeddings_type, self.tree_name_embeddings = self.make_name_embeddings()
+
     def get_tree_locations(self):
         return self.tree_locations
+
+    def make_name_embeddings(self):
+        tree_types = config.poison_fruits + config.edible_fruits
+        tree_embeddings = embed_text_sentence_transformers(tree_types, config.sensory_embedding_model)
+        return tree_types, tree_embeddings, {tree_type: tree_embedding for tree_type, tree_embedding in zip(tree_types, tree_embeddings)}
 
     def step(self):
         self.agent.step(self)
         for tree in self.trees:
             tree.step()
 
+        if False: # hasattr(self.agent.model, "target_location_estimated") and self.agent.model.target_changed:
+            target_location_estimated = self.agent.model.target_location_estimated
+            if target_location_estimated is not None:
+                if self.last_target_location_estimated is not None:
+
+                    if (target_location_estimated == self.last_target_location_estimated).all():
+                        return
+                    
+                # print(f"Target location estimated changed from {self.last_target_location_estimated} to {target_location_estimated}")
+                
+                self.last_target_location_estimated = target_location_estimated
+
+                target_sensory = self.agent.model.target_sensory
+                target_name = None
+                if target_sensory is not None:
+                   affinity = torch.matmul(self.tree_embeddings_type, target_sensory[:, None]).squeeze(-1)
+                   target_name = self.tree_names[torch.argmax(affinity).item()]
+
+                min_distance = float("inf")
+                min_distance_to_sensory = float("inf")
+                min_sensory_distance = float("inf")
+                closest_tree = None
+                closest_to_sensory = None
+                for tree in self.trees:
+                    distance = torch.norm(tree.location - target_location_estimated)
+                    if distance < min_distance:
+                        min_distance = distance
+                        closest_tree = tree
+                    
+                    if target_sensory is not None:
+                        sensory_distance = torch.norm(tree.embedding - target_sensory)
+                        if sensory_distance < min_sensory_distance:
+                            min_sensory_distance = sensory_distance
+                        if target_name is not None and tree.name == target_name and distance < min_distance_to_sensory:
+                            min_distance_to_sensory = torch.norm(tree.location - target_location_estimated)
+                            closest_to_sensory = tree
+
+                if closest_tree is not None:
+                    print(f"Closest tree to target location estimated: {closest_tree.name} at distance {min_distance.item()}; is it for food? {self.agent.model.target_location_is_for_food}")
+
+                if closest_to_sensory is not None:
+                    print(f"Closest tree to target matching sensory: {closest_to_sensory.name} at distance {min_distance_to_sensory.item()}")
+                elif target_sensory is not None:
+                    print(f"No tree found to target matching sensory: closest sensory distance {min_sensory_distance.item()}")
+
     def reset(self):
-        self.agent.location = torch.randn(self.agent.dim) * self.agent.tree_spacing * self.agent.dim
-        self.agent.heading = torch.randn(self.agent.dim) / torch.norm(torch.randn(self.agent.dim))
+        self.agent.location = torch.zeros(self.agent.dim) # torch.randn(self.agent.dim) * self.config.tree_spacing * self.agent.dim
+        self.agent.heading = torch.ones(self.agent.dim) / torch.norm(torch.ones(self.agent.dim)) # torch.randn(self.agent.dim) / torch.norm(torch.randn(self.agent.dim))
+        self.agent.reset()
         for tree in self.trees:
             tree.regrow_fruit()
     
     def run(self, num_steps: int, record=False):
+        self.reset()
+
         if record:
             self.record_positions = [self.agent.location.numpy().tolist()]
             self.record_healths = [self.agent.health]
@@ -346,11 +428,17 @@ class TreeWorld:
                 self.record_positions.append(self.agent.location.numpy().tolist())
                 self.record_healths.append(self.agent.health)
 
-            print(f"Step {i}: Agent health: {self.agent.health} Agent location: {self.agent.location.numpy().tolist()}")#, end="\r")
+            # print(f"Step {i}: Agent health: {self.agent.health} Agent location: {self.agent.location.numpy().tolist()}")#, end="\r")
             sys.stdout.flush()
 
             if self.agent.health <= 0:
                 return False
+
+            if i % 100 == 0 and i > 0:
+                if hasattr(self.agent.model, "train"):
+                    # print("Training agent model")
+                    self.agent.model.train()
+                    # print("Agent model trained")
 
         return True
 
@@ -374,7 +462,7 @@ class TreeWorld:
             trees.append(tree)
 
         agent = Agent.from_config(config)
-        return cls(trees, agent)
+        return cls(trees, agent, config)
 
 
 if __name__ == "__main__":
@@ -385,15 +473,30 @@ if __name__ == "__main__":
         steps = 1000
 
     config = TreeWorldConfig()
-    config.model_type = "StateBasedAgentWithDriveEmbedding"
+    config.model_type = "TEMAgent"   # "StateBasedAgentWithDriveEmbedding"
     world = TreeWorld.random_from_config(config)
-    print(f"Running tree world for {steps} steps...")
-    world.run(steps, record=True)
-    print("Tree world run complete.")
 
-    print(f"Agent health: {world.agent.health}")
-    print(f"Agent fruit eaten: {world.agent.fruit_eaten}")
-    print(f"Agent poisonous fruit eaten: {world.agent.poisonous_fruit_eaten}")
+    runs = 100 if hasattr(world.agent.model, "train") else 1
+    print(f"Running {runs} runs")
+    print("--------------------------------")
+    for i in range(runs):
+        print(f"Running tree world {i} for {steps} steps...")
+        world.run(steps, record=(i == runs - 1))
+        print()
+        print("Tree world run complete.")
+
+        print(f"Agent health: {world.agent.health}")
+        print(f"Agent fruit eaten: {world.agent.fruit_eaten}")
+        print(f"Agent poisonous fruit eaten: {world.agent.poisonous_fruit_eaten}")
+        print(f"Agent total movement: {world.agent.total_movement}")
+        print(f"Agent final location: {torch.norm(world.agent.location).item()}")
+
+        # if hasattr(world.agent.model, "train"):
+        #     print("Training agent model")
+        #     world.agent.model.train()
+        #     print("Agent model trained")
+
+        print("--------------------------------")
 
     from tree_world.visualize import visualize_treeworld_run
     visualize_treeworld_run(

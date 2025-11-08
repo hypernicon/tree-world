@@ -30,7 +30,6 @@ class DriveEmbeddingClassifier(torch.nn.Module):
         return y
 
 
-
 def train_drive_classifier(config: "TreeWorldConfig"):
     from tree_world.embeddings import embed_text_sentence_transformers
 
@@ -93,8 +92,6 @@ def train_drive_classifier(config: "TreeWorldConfig"):
         accuracy += (torch.abs(outputs[i, target_idx] - 1) < 0.05).float()
         cnt += 1
 
-    print(f"Drive Embedding Classifier Accuracy (with fruit amount): {accuracy*100 / cnt:.2f}%")
-
     floor_idx = cnt
     for i, state in enumerate(states):
         base_idx = i * (len(config.poison_fruits) + len(config.edible_fruits))
@@ -102,7 +99,7 @@ def train_drive_classifier(config: "TreeWorldConfig"):
             # print(f"{fruit} with {state}: {outputs[base_idx + j, 0]:.2f} vs. {state_values[i]:.2f}")
             accuracy += (torch.abs(outputs[floor_idx + base_idx + j, 0] - state_values[i]) < 0.05).float()
             cnt += 1
-            
+
         base = len(config.poison_fruits)
         for j, fruit in enumerate(config.edible_fruits):
             # print(f"{fruit} with {state}: {outputs[base_idx + base + j, 1]:.2f} vs. {state_values[i]:.2f}")
