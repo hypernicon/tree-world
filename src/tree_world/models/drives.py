@@ -1,5 +1,9 @@
 import torch
 
+from tree_world.models.utils import TorchBlocker
+from tree_world.models.memory import BidirectionalMemory
+
+
 class DriveClassifier(torch.nn.Module):
     def __init__(self, input_dim: int, num_drives: int, hidden_dim: int=128):
         super().__init__()
@@ -30,7 +34,7 @@ class DriveEmbeddingClassifier(torch.nn.Module):
         return y
 
 
-def train_drive_classifier(config: "TreeWorldConfig"):
+def train_drive_classifier(config: "TreeWorldConfig", with_ids: bool=False):
     from tree_world.embeddings import embed_text_sentence_transformers
 
     num_drives = 3
@@ -46,6 +50,10 @@ def train_drive_classifier(config: "TreeWorldConfig"):
     state_values = [0, 0.25, 0.5, 0.75, 1.0]
     state_embeddings = embed_text_sentence_transformers(states, config.sensory_embedding_model)
     state_embeddings = state_embeddings.clone()
+
+    if with_ids:
+        id_embeddings = embed_text_sentence_transformers(config.tree_ids, config.sensory_embedding_model)
+        id_embeddings = id_embeddings.clone()
 
     new_embeddings = [tree_embedding for tree_embedding in tree_embeddings]
     new_targets = [[1, 0, 0] for _ in range(len(config.poison_fruits))]
@@ -74,7 +82,10 @@ def train_drive_classifier(config: "TreeWorldConfig"):
 
     for i in range(1000):
         optimizer.zero_grad()
-        outputs = model(new_embeddings)
+        if with_ids and (i % 2) == 1:
+            outputs = model(new_embeddings + id_embeddings[torch.randperm(id_embeddings.shape[0])[:len(new_embeddings)]])
+        else:
+            outputs = model(new_embeddings)
         # literal cross entropy loss between outputs and new_targets = -sum(new_targets * log(outputs))
         loss = -torch.sum(new_targets * torch.log(outputs), dim=1).mean()
         loss.backward()
@@ -110,6 +121,51 @@ def train_drive_classifier(config: "TreeWorldConfig"):
 
     return model, {"poison": 0, "edible": 1, "neutral": 2}
 
+
+class DriveTargetProposer(torch.nn.Module):
+    """
+    Propose a target location for the agent to move to based on the drive embeddings and the memory.
+
+    :param location_dim: The dimension of the location.
+    :param embed_dim: The dimension of the embeddings.
+    :param num_drives: The number of drives.
+    :param memory: The memory of (location, location_sd, sense) tuples.
+    :param num_results: The number of results to return.
+    :param threshold: The threshold for the match scores.
+    :param diversity_steps: The number of steps to take to diversify the results.
+    :param dropout: The dropout rate.
+    """
+
+    def __init__(self, location_dim: int, sensory_dim: int, num_drives: int, memory: BidirectionalMemory, num_results: int=5, 
+                       threshold: float=0.1, diversity_steps: int=5, dropout: float=0.1):
+        super().__init__()
+        self.location_dim = location_dim
+        self.sensory_dim = sensory_dim
+        self.num_drives = num_drives
+        self.dropout = dropout
+        self.num_results = num_results
+        self.threshold = threshold
+        self.diversity_steps = diversity_steps
+        self.drive_embeddings = torch.nn.Embedding(num_drives, sensory_dim)
+        self.memory = TorchBlocker(memory)
+
+    def forward(self):
+        # TODO: should we bias search in favor of closer targets?
+        top_locations, top_location_sds, top_senses, found, num_found = self.memory.module.search(
+            self.drive_embeddings.weight[None, ...],  # add a batch dimension to the drive embeddings
+            num_results=self.num_results,
+            threshold=self.threshold,
+            diversity_steps=self.diversity_steps,
+            detach_locations=True,
+            detach_senses=True
+        )
+
+        return top_locations, top_location_sds, top_senses, num_found
+
+    def affinity_to_drives(self, sensory: torch.Tensor):
+        # sensory is (..., sensory_dim)
+        # drives are (num_drives, sensory_dim)
+        return sensory @ self.drive_embeddings.weight.transpose(0, 1)
 
 
 if __name__ == "__main__":

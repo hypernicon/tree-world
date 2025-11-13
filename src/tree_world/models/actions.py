@@ -17,7 +17,7 @@ class ActionEncoder(torch.nn.Module):
             torch.nn.LayerNorm(embed_dim),
             torch.nn.Dropout(dropout),
             torch.nn.ReLU(),
-            torch.nn.Linear(embed_dim, action_dim + 1),
+            torch.nn.Linear(embed_dim, action_dim),
         )
 
         self.optimizer = torch.optim.AdamW(self.parameters(), lr=0.01)
@@ -25,19 +25,15 @@ class ActionEncoder(torch.nn.Module):
 
     def forward(self, location: torch.Tensor, target_location: torch.Tensor):
         delta = target_location - location
-        action = self.action_model(delta)
-        action = action[..., :action_dim]
-        cost = 1 + torch.exp(action[..., action_dim])
-        action = action / (torch.norm(action, dim=-1, keepdim=True) + 1e-6)
-        return action, cost
+        return self.action_model(delta / torch.norm(delta, dim=-1, keepdim=True))
 
     def reset_weights(self):
         for param in self.parameters():
             if param.dim() > 1:
                 torch.nn.init.kaiming_normal_(param)
 
-
     def train_from_localizer(self, localizer: TEMLocalizer, training_batches: int=1000, batch_size: int=128, lookahead: int=15,
+                             dataset: list=None,
                              device: torch.device=torch.device('cpu')):
         """
         Train the action encoder from the localizer.
@@ -46,25 +42,36 @@ class ActionEncoder(torch.nn.Module):
             self.reset_weights()
 
         for i in range(training_batches):
-            locations = torch.randn(batch_size, self.location_dim, device=device)
-            actions = torch.randn(batch_size, self.action_dim, device=device)
-            costs = torch.ones(batch_size, device=device)
+            if dataset is None:
+                locations = torch.empty(batch_size, self.location_dim, device=device).uniform_(-10, 10)
+                actions = torch.randn(batch_size, self.action_dim, device=device)
+                actions = actions / torch.norm(actions, dim=-1, keepdim=True)
+                # costs = torch.ones(batch_size, device=device)
 
-            targets, _ = localizer(locations, actions, return_distribution=True)
+                targets, _ = localizer(locations, actions, return_distribution=True)
+                
+                for i in range(lookahead):
+                    locations = torch.cat([locations, targets[-batch_size:]], dim=0)
+                    targets = torch.cat([targets, localizer(locations[-batch_size:], actions, return_distribution=True)[0]], dim=0)
+                    # costs = torch.cat([costs, torch.full((batch_size,), i+2, device=device, dtype=locations.dtype)], dim=0)
+
+                actions = actions.repeat(lookahead + 1, 1)
             
-            for i in range(lookahead):
-                locations = torch.cat([locations, targets[-batch_size:]], dim=0)
-                targets = torch.cat([targets, localizer(locations[-batch_size:], actions, return_distribution=True)[0]], dim=0)
-                costs = torch.cat([costs, torch.full((batch_size,), i+2, device=device, dtype=locations.dtype)], dim=0)
+            else:
+                locations = torch.stack([p[0] for p in dataset]).squeeze()
+                actions = torch.stack([p[1] for p in dataset]).squeeze()
 
-            actions = actions.repeat(lookahead + 1, 1)
+                if (i % 2) == 0:
+                    targets = torch.stack([p[2] for p in dataset]).squeeze()
+                else:
+                    targets = localizer(locations, actions, return_distribution=True)[0]
 
-            action_guess, cost_guess = self(locations, targets.detach())
+            action_guess = self(locations, targets.detach())
 
             loss = (action_guess - actions).pow(2).sum(dim=-1).mean()
 
             # note that costs is >= 1 so that log(costs) is positive; by construction, cost_guess is >= 1 as well.
-            loss = loss + (torch.log(cost_guess / costs)).pow(2).mean()
+            # loss = loss + (torch.log(cost_guess / costs)).pow(2).mean()
 
             loss.backward()
             self.optimizer.step()
@@ -80,8 +87,9 @@ class ActionEncoder(torch.nn.Module):
         """
         Test the action encoder on the localizer.
         """
-        locations = torch.randn(batch_size, self.location_dim, device=device)
+        locations = torch.randn(batch_size, self.location_dim, device=device) * 10
         actions = torch.randn(batch_size, self.action_dim, device=device)
+        actions = actions / torch.norm(actions, dim=-1, keepdim=True)
 
         targets, _ = localizer(locations, actions, return_distribution=True)
             
@@ -91,7 +99,7 @@ class ActionEncoder(torch.nn.Module):
 
         actions = actions.repeat(lookahead + 1, 1)
 
-        action_guess, _ = self(locations, targets.detach())
+        action_guess = self(locations, targets.detach())
 
         loss = (action_guess - actions).pow(2).sum(dim=-1).mean()
         return loss.item()

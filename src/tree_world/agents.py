@@ -1,11 +1,15 @@
 import sys
+import math
 import torch
 from typing import Tuple
 
 from tree_world.simulation import AgentModel, Sensor, TreeWorldConfig
 from tree_world.models.drives import DriveEmbeddingClassifier, train_drive_classifier
-from tree_world.models.tem import TEMModel
+from tree_world.models.tem import SimpleTEMModel,TEMModel
 from tree_world.models.actions import ActionEncoder
+from tree_world.models.homeostasis import HomeostaticController
+
+from tree_world.states import DriveManager, Location, Target, DriveTarget, ExploreState
 
 
 class StateBasedAgent(AgentModel):
@@ -62,8 +66,8 @@ class StateBasedAgent(AgentModel):
 
 
 class StateBasedAgentWithDriveEmbedding(StateBasedAgent):
-    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, dim: int=2, can_see_fruit_distance: float=10.0, drive_embedding_model: DriveEmbeddingClassifier=None, drive_keys: dict=None):
-        super().__init__(sensory_embedding_dim, sensory_embedding_model, dim, can_see_fruit_distance)
+    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, dim: int=2, can_see_fruit_distance: float=10.0, max_distance: float=100.0, drive_embedding_model: DriveEmbeddingClassifier=None, drive_keys: dict=None):
+        super().__init__(sensory_embedding_dim, sensory_embedding_model, dim, can_see_fruit_distance, max_distance)
         self.drive_embedding_model = drive_embedding_model
         self.drive_keys = drive_keys
 
@@ -93,329 +97,12 @@ class StateBasedAgentWithDriveEmbedding(StateBasedAgent):
         return cls(config.sensory_embedding_dim, config.sensory_embedding_model, config.dim, config.can_see_fruit_distance, drive_embedding_model, drive_keys)
 
 
-class DriveManager:
-    def __init__(self, drive_embedding_model: DriveEmbeddingClassifier, drive_keys: dict, tem_model: TEMModel):
-        self.drive_embedding_model = drive_embedding_model
-        self.drive_keys = drive_keys
-        self.tem_model = tem_model
-    
-    def choose_hunger_target(self, location: 'Location', tem_model: TEMModel) -> 'Location':
-        hunger_idx = self.drive_keys["edible"]
-        hunger_value = self.drive_embedding_model.drive_embeddings.weight[hunger_idx]
-
-        top_locations, top_location_sds, top_senses, _, num_found = self.tem_model.memory.search(hunger_value[None, :], num_results=5)
-        if num_found[0] > 0:
-            # print(f"Selected target location to satisfy hunger")
-            target_location = Location(top_locations[0,:1].detach(), top_location_sds[0,:1].detach())
-            target = DriveTarget(hunger_value.detach(), top_senses[0,:1].detach(), location, target_location)
-            return target
-        else:
-            return None
-
-    def assess_valence(self, sensory: torch.Tensor) -> float:
-        drive_targets = self.drive_embedding_model(sensory.clone()[None, :])[0]
-        if drive_targets[self.drive_keys["poison"]] > 0.1:
-            return -1.0
-        elif drive_targets[self.drive_keys["edible"]] > 0.1:
-            return 1.0
-        else:
-            return 0.0
-
-
-class Location:
-    def __init__(self, location: torch.Tensor, location_sd: torch.Tensor):
-        self.location = location
-        self.location_sd = location_sd
-        self.estimated_location = None
-
-    def interpret(self, location_model: torch.nn.Module):
-        self.estimated_location = location_model(self.location)
-        if self.estimated_location is not None:
-            self.estimated_location = self.estimated_location.detach().squeeze()
-
-
-class Target:
-    arrive_z_threshold: float = 0.1
-
-    def __init__(self, 
-        start_location: Location, 
-        target_location: Location,
-        location_model: torch.nn.Module=None
-    ):
-        self.start_location = start_location
-        self.current_location = start_location
-        self.target_location = target_location
-
-        self.location_model = location_model
-        self.target_location_estimated = None
-
-        if self.location_model is not None:
-            self.start_location.interpret(self.location_model)
-            self.current_location.interpret(self.location_model)
-            self.target_location.interpret(self.location_model)
-
-    def update_current_location(self, location: Location):
-        self.current_location = location
-        if self.location_model is not None:
-            self.current_location.interpret(self.location_model)
-    
-    def update_location_model(self, location_model: torch.nn.Module):
-        self.location_model = location_model
-        if self.location_model is not None:
-            self.start_location.interpret(self.location_model)
-            self.current_location.interpret(self.location_model)
-            self.target_location.interpret(self.location_model)
-
-    def has_arrived(self) -> bool:
-        z = self.current_location.location - self.target_location.location
-        if self.target_location.location_sd is not None:
-            sd = self.target_location.location_sd + self.current_location.location_sd
-        else:
-            sd = self.current_location.location_sd
-        
-        z = z / (sd + 1e-6)
-
-        return torch.norm(z) < self.arrive_z_threshold
-
-
-class DriveTarget(Target):
-    def __init__(self, 
-        drive_embedding: torch.Tensor,
-        sensory_target: torch.Tensor,
-        start_location: Location, 
-        target_location: Location,
-        location_model: torch.nn.Module=None
-    ):
-        super().__init__(start_location, target_location, location_model)
-        self.drive_embedding = drive_embedding
-        self.sensory_target = sensory_target
-
-
-class State:
-    avoid_distance: float = 10.0
-    health_cutoff: float = 0.5
-    last_heading_delta: torch.Tensor = None
-
-    def update(self, 
-        tem_model: TEMModel, drive_manager: DriveManager,
-        action_encoder: ActionEncoder,
-        location: Location, object_location: Location,
-        heading: torch.Tensor, distance: float, 
-        health: float, embedding: torch.Tensor, 
-        agent_location: torch.Tensor=None, obj_location: torch.Tensor=None,
-        location_model: torch.nn.Module=None
-    ) -> 'State':
-        raise NotImplementedError("Subclasses must implement this method")
-
-    def get_action(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError("Subclasses must implement this method")
-
-    def get_orthogonal_direction(self, heading: torch.Tensor) -> torch.Tensor:
-        dim = heading.shape[-1]
-        orthogonal_direction = torch.randn(dim)
-        orthogonal_direction = orthogonal_direction - torch.dot(orthogonal_direction, heading) * heading
-        orthogonal_direction = orthogonal_direction / torch.norm(orthogonal_direction)
-        if self.last_heading_delta is not None:
-            dp = torch.dot(orthogonal_direction, self.last_heading_delta)
-            if dp < 0:
-                # keep the orthogonal direction in the same direction
-                orthogonal_direction = -orthogonal_direction
-        self.last_heading_delta = orthogonal_direction
-        return orthogonal_direction
-
-
-class ExploreState(State):
-    def __init__(self, force: bool=False):
-        self.force = force
-
-    def update(self, 
-        tem_model: TEMModel, drive_manager: DriveManager,
-        action_encoder: ActionEncoder,
-        location: Location, object_location: Location,
-        heading: torch.Tensor, distance: float, 
-        health: float, embedding: torch.Tensor, 
-        agent_location: torch.Tensor=None, obj_location: torch.Tensor=None,
-        location_model: torch.nn.Module=None
-    ) -> 'State':
-        if health <= self.health_cutoff and not self.force:
-            return SelectTargetState().update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-        target_location = Location(tem_model.get_curiosity_target(location.location).detach(), None)
-        target = Target(location, target_location, location_model)
-        return GoToState(target).update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-    def get_action(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError("This state always transitions to another state, so it should not be asked to get an action")
-
-
-class SelectTargetState(State):
-    health_cutoff: float = 0.6
-
-    def update(self, 
-        tem_model: TEMModel, drive_manager: DriveManager,
-        action_encoder: ActionEncoder,
-        location: Location, object_location: Location,
-        heading: torch.Tensor, distance: float, 
-        health: float, embedding: torch.Tensor, 
-        agent_location: torch.Tensor=None, obj_location: torch.Tensor=None,
-        location_model: torch.nn.Module=None
-    ) -> 'State':
-        if health > self.health_cutoff:
-            return ExploreState().update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-    
-        target = drive_manager.choose_hunger_target(location, tem_model)
-        if target is None:
-            return ExploreState(force=True).update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-        
-        target.update_location_model(location_model)
-        return GoToState(target).update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-    def get_action(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        raise NotImplementedError("This state always transitions to another state, so it should not be asked to get an action")
-
-
-class ExploitState(State):
-    def __init__(self):
-        self.last_health = 0.0
-        self.heading = None
-
-    def update(self, 
-        tem_model: TEMModel, drive_manager: DriveManager,
-        action_encoder: ActionEncoder,
-        location: Location, object_location: Location,
-        heading: torch.Tensor, distance: float, 
-        health: float, embedding: torch.Tensor, 
-        agent_location: torch.Tensor=None, obj_location: torch.Tensor=None,
-        location_model: torch.nn.Module=None
-    ) -> 'State':
-        self.heading = heading
-        last_health = self.last_health
-        self.last_health = health
-        if health > last_health:
-            return self
-
-        elif health < self.health_cutoff:
-            return SelectTargetState().update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-        
-        else: 
-            return ExploreState().update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-    def get_action(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        position_delta = torch.zeros_like(self.heading)
-
-        orthogonal_direction = self.get_orthogonal_direction(self.heading)
-        new_heading = self.heading + 0.1 * orthogonal_direction
-        new_heading = new_heading / torch.norm(new_heading)
-
-        return position_delta, new_heading
-
-
-class GoToState(State):
-    def __init__(self, target: Target):
-        self.target = target
-        self.action_encoder = None
-        self.heading = None
-
-    def update(self, 
-        tem_model: TEMModel, drive_manager: DriveManager,
-        action_encoder: ActionEncoder,
-        location: Location, object_location: Location,
-        heading: torch.Tensor, distance: float, 
-        health: float, embedding: torch.Tensor, 
-        agent_location: torch.Tensor=None, obj_location: torch.Tensor=None,
-        location_model: torch.nn.Module=None
-    ) -> 'State':
-        self.target.update_current_location(location)
-
-        if self.target.has_arrived():
-            if self.health_cutoff > health:
-                return ExploitState().update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-            else:
-                return ExploreState().update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-        if distance is not None:
-            valence = drive_manager.assess_valence(embedding)
-            if valence > 0.0:
-                return ApproachState(embedding, self).update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-            elif valence < 0.0 and distance < self.avoid_distance:
-                return AvoidState(embedding, self).update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-        
-        self.action_encoder = action_encoder
-        self.heading = heading
-        return self
-    
-    def get_action(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        position_delta = self.action_encoder(self.target.current_location.location, self.target.target_location.location)[0].detach()
-
-        # spin as we move
-        orthogonal_direction = self.get_orthogonal_direction(self.heading)
-        new_heading = self.heading + 0.1 * orthogonal_direction
-        new_heading = new_heading / torch.norm(new_heading)
-
-        return position_delta, new_heading
-
-
-class RespondState(State):
-    embedding_diff_threshold: float = 0.1
-
-    def __init__(self, sensory: torch.Tensor, return_to: State, valence: float=1.0):
-        self.sensory = sensory
-        self.return_to = return_to
-        self.valence = valence
-        self.heading = None
-
-    def update(self, 
-        tem_model: TEMModel, drive_manager: DriveManager,
-        action_encoder: ActionEncoder,
-        location: Location, object_location: Location,
-        heading: torch.Tensor, distance: float, 
-        health: float, embedding: torch.Tensor, 
-        agent_location: torch.Tensor=None, obj_location: torch.Tensor=None,
-        location_model: torch.nn.Module=None
-    ) -> 'State':
-        if self.valence > 0.0 and (distance is not None and distance < 5.0):
-            return ExploitState().update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-        if distance is None or (distance > 2 * self.avoid_distance and self.valence < 0.0):
-            return self.return_to.update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-        embedding_diff = torch.norm(embedding - self.sensory)
-        if embedding_diff > self.embedding_diff_threshold:
-            valence = drive_manager.assess_valence(embedding)
-            if valence > 0.0:
-                return ApproachState(embedding, self.return_to).update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-            elif valence < 0.0 and distance < self.avoid_distance:
-                return AvoidState(embedding, self.return_to).update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-            else:
-                return self.return_to.update(tem_model, drive_manager, action_encoder, location, object_location, heading, distance, health, embedding, agent_location, obj_location, location_model)
-
-        self.heading = heading
-        return self
-
-    def get_action(self) -> Tuple[torch.Tensor, torch.Tensor]:
-        return self.valence * self.heading.clone().detach(), self.heading
-
-
-class ApproachState(RespondState):
-    def __init__(self, sensory: torch.Tensor, return_location: Location):
-        super().__init__(sensory, return_location, 1.0)
-
-
-class AvoidState(RespondState):
-    def __init__(self, sensory: torch.Tensor, return_location: Location):
-        super().__init__(sensory, return_location, -1.0)
-
-
-class TEMAgent(AgentModel):
-    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, dim: int=2, can_see_fruit_distance: float=10.0, tem_model: TEMModel=None, action_encoder: TEMActionEncoder=None, drive_embedding_model: DriveEmbeddingClassifier=None, drive_keys: dict=None):
-        super().__init__(sensory_embedding_dim, sensory_embedding_model, dim, can_see_fruit_distance)
+class TEMPreAgent:
+    def __init__(self, tem_model: SimpleTEMModel, action_encoder: ActionEncoder, drive_embedding_model: DriveEmbeddingClassifier=None, drive_keys: dict=None):
         self.tem_model = tem_model
         self.action_encoder = action_encoder
         self.drive_embedding_model = drive_embedding_model
         self.drive_keys = drive_keys
-        self.drive_manager = DriveManager(drive_embedding_model, drive_keys, tem_model)
-
-        self.state = ExploreState()
 
         self.last_action = None
         self.last_location= None
@@ -435,12 +122,12 @@ class TEMAgent(AgentModel):
 
         self.location_dataset = []
         self.obj_location_dataset = []
+        self.action_dataset = []
         self.location_model = None
 
         self.total_movement = 0.0
-        self.turns_with_a_target = 0
-        self.turns_without_a_target = 0
-        self.train_t = 0
+
+        self.is_simple = isinstance(tem_model, SimpleTEMModel)
 
     def reset(self):
         self.tem_model.reset()
@@ -449,20 +136,13 @@ class TEMAgent(AgentModel):
         self.target_location = None
         self.elbo = None
         self.log_prob = None
-        self.exploration_mode = True
         self.total_movement = 0.0
-        self.train_t = 0
-        self.turns_with_a_target = 0
-        self.turns_without_a_target = 0
-        self.target_location_estimated = None
-        self.target_location_sd = None
-        self.target_location_is_for_food = False
-        self.target_sensory = None
-        self.target_changed = False
 
-    def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
-                   agent_location: torch.Tensor=None, obj_location: torch.Tensor=None):
+        self.action_dataset = []
 
+    def update_tem_model(self, sensory: torch.Tensor, action: torch.Tensor, last_location: torch.Tensor, heading: torch.Tensor, 
+                         distance: torch.Tensor, agent_location: torch.Tensor=None, obj_location: torch.Tensor=None,
+                         force_correct_location: bool=False):
         heading = heading.detach().clone().requires_grad_(True)
         self.target_changed = False
 
@@ -470,53 +150,50 @@ class TEMAgent(AgentModel):
             embedding = torch.zeros(self.sensory_embedding_dim, requires_grad=True)
             distance_modified = None
         else:
-            embedding = embedding.clone()
+            embedding = sensory.clone()
             embedding.requires_grad = True
-            distance_modified = torch.empty(1, 1, device=embedding.device, dtype=embedding.dtype).fill_(distance / self.can_see_fruit_distance)
+            distance_modified = torch.empty(1, 1, device=embedding.device, dtype=embedding.dtype).fill_(distance / self.max_distance)
 
         # report the current sensory information to the TEM model to update the map
-        location, location_sd, obj_loc_est, obj_loc_sd, elbo, log_prob, kl_next, kl_obj = self.tem_model(
-            embedding[None,:], self.last_action, self.last_location, heading[None,:], distance_modified
-        )
+        if self.is_simple:
+            location, location_sd, elbo, log_prob, kl_next = self.tem_model(
+                embedding[None,:], self.last_action, self.last_location,
+                force_location=agent_location[None, :] if force_correct_location else None
+            )
+            obj_loc_est = None
+            obj_loc_sd = None
+        else:
+            location, location_sd, obj_loc_est, obj_loc_sd, elbo, log_prob, kl_next, kl_obj = self.tem_model(
+                embedding[None,:], self.last_action, self.last_location, heading[None,:], distance_modified,
+                force_location=agent_location[None, :] if force_correct_location else None
+            )
+
         self.train_t = 1 if self.elbo is None else self.train_t + 1
         self.elbo = torch.nan_to_num(elbo) if self.elbo is None else self.elbo + torch.nan_to_num(elbo)
 
         if self.last_location is not None:
             self.total_movement = self.total_movement + torch.norm(location - self.last_location)
 
-        if distance is not None:
+        if distance is not None or not self.is_simple:
             self.log_prob = log_prob.item()
-            print(f"Log prob: {self.log_prob:.3f} ELBO: {elbo.item():.3f} KL NEXT: {kl_next.item():.3f} KL OBJ: {kl_obj.item():.3f} SD: {location_sd.min().item():.3f} - {location_sd.max().item():.3f} OBJ SD: {obj_loc_sd.min().item():.3f} - {obj_loc_sd.max().item():.3f}\t\t\t\t\t", end="\r")
+            print(f"Log prob: {self.log_prob:.3f} ELBO: {elbo.item():.3f} KL NEXT: {kl_next.item():.3f}", end="")
+            if not self.is_simple:
+                print(f" KL OBJ: {kl_obj.item():.3f}", end="")
+            print(f" SD: {location_sd.min().item():.3f} - {location_sd.max().item():.3f} ", end="" if not self.is_simple else "\t\t\t\t\t\t\r")
+            if not self.is_simple:
+                print(f" OBJ SD: {obj_loc_sd.min().item():.3f} - {obj_loc_sd.max().item():.3f}\t\t\t\t\t", end="\r")
             sys.stdout.flush()
 
         self.location_dataset.append((location.detach().clone(), agent_location))
-        if obj_location is not None:
+        if obj_location is not None and not self.is_simple:
             self.obj_location_dataset.append((obj_loc_est.detach().clone(), obj_location))
         
+        if self.last_location is not None and self.last_action is not None:
+            self.action_dataset.append((self.last_location.detach().clone(), self.last_action.detach().clone(), location.detach().clone()))
+
         self.last_location = location.detach()
 
-        location = Location(location.detach(), location_sd.detach())
-        if obj_loc_est is not None:
-            obj_loc = Location(obj_loc_est.detach(), obj_loc_sd.detach())
-        else:
-            obj_loc = None
-
-        self.state = self.state.update(
-            self.tem_model, self.drive_manager, self.action_encoder, location, obj_loc, 
-            heading, distance, health, embedding, agent_location, obj_location, self.predict_location
-        )
-
-        position_delta, new_heading = self.state.get_action()
-        
-        # print(f"Action: {action.detach().cpu().numpy().tolist()}, ELBO: {self.elbo}")
-        self.last_action = position_delta[None, :]
-
-        # spin as we move
-        # orthogonal_direction = self.get_orthogonal_direction(heading)
-        # new_heading = heading + 0.1 * orthogonal_direction
-        # new_heading = new_heading / torch.norm(new_heading)
-
-        return position_delta, new_heading
+        return location, location_sd, obj_loc_est, obj_loc_sd
 
     def train(self):
         """
@@ -524,7 +201,8 @@ class TEMAgent(AgentModel):
         """
         # print(f"Training TEM for {self.train_t} steps")
         # Maximize the ELBO -- but backward will optimizer will minimize the negative of the ELBO
-        (-self.elbo).backward(retain_graph=True)
+        loss = self.tem_model.regularize(-self.elbo)
+        loss.backward(retain_graph=True)
 
         # print the gradients of the tem model
         for name, param in self.tem_model.named_parameters():
@@ -541,7 +219,11 @@ class TEMAgent(AgentModel):
         self.last_location = self.last_location.detach()
         self.last_action = self.last_action.detach()
 
-        self.action_encoder.train_from_localizer(self.tem_model.encoder.localizer, training_batches=100)
+        train_locations = None
+        if self.location_dataset is not None:
+            train_locations = torch.stack([p[0] for p in self.location_dataset]).squeeze()
+        
+        self.action_encoder.train_from_localizer(self.tem_model.encoder.localizer, training_batches=100)#, dataset=self.action_dataset)
         encoder_action_loss = self.action_encoder.test_on_localizer(self.tem_model.encoder.localizer)
         decoder_action_loss = self.action_encoder.test_on_localizer(self.tem_model.decoder.localizer)
         print(f"Encoder action loss: {encoder_action_loss:.3f}, Decoder action loss: {decoder_action_loss:.3f}")
@@ -563,9 +245,14 @@ class TEMAgent(AgentModel):
         if len(self.location_dataset) > 0 and len(self.obj_location_dataset) > 0:
             mse = self.train_location_model(self.location_dataset + self.obj_location_dataset)
             print(f"COMBINED location model with {len(self.location_dataset) + len(self.obj_location_dataset)} samples, mse loss: {mse:.3f}")
- 
+        elif self.is_simple:
+            mse = self.train_location_model(self.location_dataset)
+            print(f"LOCATION model with {len(self.location_dataset)} samples, mse loss: {mse:.3f}")
+
         self.location_dataset = self.location_dataset[-1000:]
-        self.obj_location_dataset = self.obj_location_dataset[-1000:]
+        if not self.is_simple:
+            self.obj_location_dataset = self.obj_location_dataset[-1000:]
+
         self.total_movement = 0.0
     
     def train_location_model(self, dataset):
@@ -604,7 +291,7 @@ class TEMAgent(AgentModel):
         opt = torch.optim.Adam(model.parameters(), lr=1e-3)
         mse = torch.nn.MSELoss()
 
-        for _ in range(500):
+        for _ in range(250):
             opt.zero_grad()
             pred_n = model(train_x_n)
             loss = mse(pred_n, train_y_n)      # train in normalized space
@@ -622,6 +309,9 @@ class TEMAgent(AgentModel):
         return rmse_world
     
     def predict_location(self, location: torch.Tensor):
+        # if location.shape[-1] == 2:
+        #     return location.clone().squeeze()
+
         if self.location_model is None:
             return None
 
@@ -629,12 +319,289 @@ class TEMAgent(AgentModel):
         location_n = (location - x_mu) / x_sigma
         return model(location_n[None,:]).squeeze() * y_sigma + y_mu
 
+    def interpret(self, agent_location: torch.Tensor, full_interpret: bool=False):
+        if self.location_model is None:
+            return None
+
+        if full_interpret:
+            memory_locations, memory_classifications = self.tem_model.interpret(self.predict_location, self.drive_embedding_model)
+        else:
+            memory_locations = None
+            memory_classifications = None
+
+        last_agent_location = self.last_location.detach()
+        agent_location_projected = self.predict_location(last_agent_location)
+        error = agent_location - agent_location_projected
+
+        # if memory_locations is not None:
+        #     memory_locations = memory_locations + error[..., None, :]
+        # else:
+        #     memory_locations = None
+
+        target_location = self.target_location.detach() if self.target_location is not None else None
+        if target_location is not None:
+            if target_location.ndim == 1:
+                target_location = target_location[None, :]
+            target_location_projected = self.predict_location(target_location) # + error
+        else:
+            target_location_projected = None
+
+        return agent_location_projected, target_location_projected, memory_locations, memory_classifications
+
+
+class TEMAgent(AgentModel, TEMPreAgent):
+    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, dim: int=2, can_see_fruit_distance: float=10.0, 
+                 max_distance: float=100.0,
+                 tem_model: TEMModel=None, action_encoder: ActionEncoder=None, 
+                 drive_embedding_model: DriveEmbeddingClassifier=None, drive_keys: dict=None):
+        AgentModel.__init__(self, sensory_embedding_dim, sensory_embedding_model, dim, can_see_fruit_distance, max_distance)
+        TEMPreAgent.__init__(self, tem_model, action_encoder, drive_embedding_model, drive_keys)
+        self.drive_manager = DriveManager(drive_embedding_model, drive_keys, tem_model)
+
+        self.state = ExploreState()
+
+        self.elbo = None
+        self.log_prob = None
+
+        self.tem_optimizer = torch.optim.AdamW(self.tem_model.parameters(), lr=0.001)
+
+        self.location_dataset = []
+        self.obj_location_dataset = []
+        self.location_model = None
+    
+    def reset(self):
+        TEMPreAgent.reset(self)
+        self.state = ExploreState()
+
+    def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
+                   agent_location: torch.Tensor=None, obj_location: torch.Tensor=None):
+
+        location, location_sd, obj_loc_est, obj_loc_sd = self.update_tem_model(
+            embedding, self.last_action, self.last_location, heading, distance, agent_location, obj_location
+        )
+
+        location = Location(location.detach(), location_sd.detach())
+        if obj_loc_est is not None:
+            obj_loc = Location(obj_loc_est.detach(), obj_loc_sd.detach())
+        else:
+            obj_loc = None
+
+        self.state = self.state.update(
+            self.tem_model, self.drive_manager, self.action_encoder, location, obj_loc, 
+            heading, distance, health, embedding, agent_location, obj_location, self.predict_location
+        )
+
+        position_delta, new_heading = self.state.get_action()
+        
+        # print(f"Action: {action.detach().cpu().numpy().tolist()}, ELBO: {self.elbo}")
+        self.last_action = position_delta[None, :]
+
+        # spin as we move
+        # orthogonal_direction = self.get_orthogonal_direction(heading)
+        # new_heading = heading + 0.1 * orthogonal_direction
+        # new_heading = new_heading / torch.norm(new_heading)
+
+        # print(f"Position delta: {position_delta.detach().cpu().numpy().tolist()}")
+        # print(f"New heading: {new_heading.detach().cpu().numpy().tolist()}")
+
+        return position_delta, new_heading
+
     
     @classmethod
     def from_config(cls, config: TreeWorldConfig):
-        tem_model = TEMModel.from_config(config)
+        if config.simple_tem:
+            tem_model = SimpleTEMModel.from_config(config)
+        else:
+            tem_model = TEMModel.from_config(config)
         action_encoder = ActionEncoder.from_config(config)
         drive_embedding_model, drive_keys = train_drive_classifier(config)
         return cls(config.sensory_embedding_dim, config.sensory_embedding_model, config.dim, config.can_see_fruit_distance, 
+                   config.max_sense_distance,
+                   tem_model, action_encoder, drive_embedding_model, drive_keys)
+
+
+class HomeostaticAgent(AgentModel, TEMPreAgent):
+    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, 
+                       dim: int=2, can_see_fruit_distance: float=10.0, 
+                       max_distance: float=100.0,
+                       tem_model: TEMModel=None, action_encoder: ActionEncoder=None, 
+                       homeostatic_controller: HomeostaticController=None, max_health: int=1000,
+                       drive_embedding_model: DriveEmbeddingClassifier=None, drive_keys: dict=None):
+        AgentModel.__init__(self, sensory_embedding_dim, sensory_embedding_model, dim, can_see_fruit_distance, max_distance)
+        TEMPreAgent.__init__(self, tem_model, action_encoder, drive_embedding_model, drive_keys)
+        self.controller = homeostatic_controller
+        self.max_health = max_health
+
+        self.homeostatic_log_prob = None
+        self.homeostatic_reward = 0.0
+        self.homeostatic_threshold_upper = torch.tensor([0.75])
+        self.homeostatic_threshold_lower = torch.tensor([0.25])
+
+        self.homeostatic_optimizer = torch.optim.AdamW(self.controller.parameters(), lr=0.001)
+
+    def reset(self):
+        TEMPreAgent.reset(self)
+        self.homeostatic_log_prob = None
+        self.homeostatic_reward = 0.0
+
+    def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
+                   agent_location: torch.Tensor=None, obj_location: torch.Tensor=None):
+
+        location, location_sd, obj_loc_est, obj_loc_sd = self.update_tem_model(
+            embedding, self.last_action, self.last_location, heading, distance, agent_location, obj_location
+        )
+
+        diagnostics = torch.tensor([[health / self.max_health]], device=embedding.device, dtype=embedding.dtype)
+
+        target_location = self.target_location.detach() if self.target_location is not None else None
+        target_location_sd = self.target_location_sd.detach() if self.target_location_sd is not None else None
+
+        if self.target_location is None:
+            has_current_target = False
+        elif torch.norm(location.detach() - target_location) < torch.norm(location_sd.detach() + target_location_sd.detach()):
+            has_current_target = False
+        else:
+            has_current_target = True
+        
+        has_current_target = torch.tensor([has_current_target], device=embedding.device, dtype=torch.bool)
+
+        movement_action, heading_action, target, target_sd, lp = self.controller(
+            diagnostics, heading[None,:], location.detach(), location_sd.detach(), 
+            has_current_target, target_location, target_location_sd, probabilistic=True
+        )
+
+        # this is a negative "reward" for being too hungry or too full
+        homeostatic_punishment = (
+            - torch.relu(diagnostics - self.homeostatic_threshold_upper) 
+            - torch.relu(self.homeostatic_threshold_lower - diagnostics)
+        )
+
+        if self.homeostatic_log_prob is None:
+            self.homeostatic_log_prob = lp
+
+        else:
+            self.homeostatic_log_prob = self.homeostatic_log_prob + lp
+
+        self.homeostatic_reward = self.homeostatic_reward + homeostatic_punishment * self.homeostatic_log_prob
+        
+
+        self.last_action = movement_action.detach()
+        self.target_location = target.detach()
+        self.target_location_sd = target_sd.detach()
+
+        # print(f"Heading action: {heading_action.detach().cpu().numpy().tolist()}")
+        # print(f"Movement action: {movement_action.detach().cpu().numpy().tolist()}")
+        return movement_action[0].detach(), heading_action[0].detach()
+
+    def train(self):
+        super().train()
+
+        (-self.homeostatic_reward).backward(retain_graph=True)
+
+        torch.nn.utils.clip_grad_norm_(self.controller.parameters(), 1.0)
+        self.homeostatic_optimizer.step()
+        self.homeostatic_optimizer.zero_grad()
+        self.homeostatic_log_prob = None
+        self.homeostatic_reward = 0.0
+
+        self.controller.drive_target_proposer.drive_embeddings.weight.data[0] = (
+            self.drive_embedding_model.drive_embeddings.weight[self.drive_keys["edible"]].detach()  
+        )
+
+
+    @classmethod
+    def from_config(cls, config: TreeWorldConfig):
+        if config.simple_tem:
+            tem_model = SimpleTEMModel.from_config(config)
+        else:
+            tem_model = TEMModel.from_config(config)
+        action_encoder = ActionEncoder.from_config(config)
+        homeostatic_controller = HomeostaticController(
+            1, config.location_dim, config.dim, config.sensory_embedding_dim, 1, 
+            tem_model.memory, action_encoder, num_results=5, threshold=0.1, diversity_steps=5, dropout=0.1
+        )
+        drive_embedding_model, drive_keys = train_drive_classifier(config)
+        homeostatic_controller.drive_target_proposer.drive_embeddings.weight.data[0] = drive_embedding_model.drive_embeddings.weight[drive_keys["edible"]].detach()  
+
+        return cls(config.sensory_embedding_dim, config.sensory_embedding_model, config.dim, config.can_see_fruit_distance, config.max_sense_distance,
+                   tem_model, action_encoder, homeostatic_controller, config.max_health, drive_embedding_model, drive_keys)
+
+
+class PathTracingTEMAgent(AgentModel, TEMPreAgent):
+    def __init__(self, sensory_embedding_dim: int, sensory_embedding_model: str, 
+                       dim: int=2, can_see_fruit_distance: float=10.0,
+                       max_distance: float=100.0,
+                       tem_model: TEMModel=None, action_encoder: ActionEncoder=None,
+                       drive_embedding_model: DriveEmbeddingClassifier=None, drive_keys: dict=None):
+        AgentModel.__init__(self, sensory_embedding_dim, sensory_embedding_model, dim, can_see_fruit_distance, max_distance)
+        TEMPreAgent.__init__(self, tem_model, action_encoder, drive_embedding_model, drive_keys)
+
+        self.t = 0
+
+        time_to_rotate_spiral = 100
+        time_to_rotate_heading = 25
+        distance_increment_first_spiral = 25
+
+        self.alpha = distance_increment_first_spiral / time_to_rotate_spiral
+        self.beta = 2 * math.pi / time_to_rotate_spiral
+        self.gamma = 2 * math.pi / time_to_rotate_heading
+
+        self.sign = 1.0
+
+    def reset(self):
+        TEMPreAgent.reset(self)
+        self.t = 0
+
+    def coords(self, t):
+        r = self.alpha * t
+        th = self.beta * t
+
+        return torch.tensor([r * math.cos(th), r * math.sin(th)])
+
+    def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
+                   agent_location: torch.Tensor=None, obj_location: torch.Tensor=None):
+
+        location, location_sd, obj_loc_est, obj_loc_sd = self.update_tem_model(
+            embedding, self.last_action, self.last_location, heading, distance, agent_location, obj_location,
+            # force_correct_location=True
+        )
+
+        r = self.alpha * self.t
+        ph = self.gamma * self.t
+
+        if r > 500:
+            self.sign = -1.0
+        elif r < 5:
+            self.sign = 1.0
+
+        start_coords = self.coords(self.t)
+        end_coords = self.coords(self.t + 1)
+        position_delta = end_coords - start_coords
+
+        new_heading = torch.tensor([math.cos(ph), math.sin(ph)])
+
+        agent_r = torch.norm(agent_location).item()
+        agent_th = torch.atan2(agent_location[1], agent_location[0]).item()
+        agent_ph = torch.atan2(agent_location[1], agent_location[0]).item()
+
+        #print(f"{self.t}: Agent x, y: ({agent_location[0]:.3f}, {agent_location[1]:.3f}), Agent r, th: ({agent_r:.3f}, {agent_th:.3f}), Agent ph: {agent_ph:.3f}")
+        #print(f"{self.t}: Position delta: {position_delta.detach().cpu().numpy().tolist()}, New heading: {new_heading.detach().cpu().numpy().tolist()}")
+
+        self.last_action = position_delta[None, :]
+
+        self.t = self.t + 1
+
+        return position_delta, new_heading
+    
+    @classmethod
+    def from_config(cls, config: TreeWorldConfig):
+        if config.simple_tem:
+            tem_model = SimpleTEMModel.from_config(config)
+        else:
+            tem_model = TEMModel.from_config(config)
+        action_encoder = ActionEncoder.from_config(config)
+        drive_embedding_model, drive_keys = train_drive_classifier(config)
+        return cls(config.sensory_embedding_dim, config.sensory_embedding_model, config.dim, config.can_see_fruit_distance, 
+                   config.max_sense_distance,
                    tem_model, action_encoder, drive_embedding_model, drive_keys)
 

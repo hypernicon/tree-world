@@ -8,6 +8,6 @@ class CuriositySampler(torch.nn.Module):
         super().__init__()
         self.location_dim = location_dim
 
-    def forward(self, num_results: int, dtype: torch.dtype=torch.float32, device: torch.device=torch.device('cpu')):
-        return torch.randn(self.batch_size, num_results, self.location_dim, dtype=dtype, device=device)
+    def forward(self, batch_size: int, num_results: int, dtype: torch.dtype=torch.float32, device: torch.device=torch.device('cpu')):
+        return torch.randn(batch_size, num_results, self.location_dim, dtype=dtype, device=device)
 

@@ -51,19 +51,28 @@ class BidirectionalMemory(torch.nn.Module):
     :param dropout: The dropout rate.
 
     """
-    def __init__(self, location_dim: int, sensory_dim: int, embed_dim: int, batch_size: int=1):
+    def __init__(self, location_dim: int, sensory_dim: int, embed_dim: int, batch_size: int=1, max_memory_size: int=-1):
         super().__init__()
         self.location_dim = location_dim
         self.sensory_dim = sensory_dim
         self.embed_dim = embed_dim
         self.batch_size = batch_size
+        self.max_memory_size = max_memory_size
 
-        self.sensory_proj = torch.nn.Linear(sensory_dim, embed_dim, bias=False)
-        self.sensory_read_proj = torch.nn.Linear(embed_dim, sensory_dim, bias=False)
+        if embed_dim == sensory_dim:
+            self.sensory_proj = torch.nn.Identity()
+            self.sensory_read_proj = torch.nn.Identity()
+        else:
+            self.sensory_proj = torch.nn.Linear(sensory_dim, embed_dim, bias=False)
+            self.sensory_read_proj = torch.nn.Linear(embed_dim, sensory_dim, bias=False)
+
+            self.sensory_proj.weight.data /= torch.linalg.matrix_norm(self.sensory_proj.weight.data)
+            self.sensory_read_proj.weight.data = torch.pinverse(self.sensory_proj.weight.data)
 
         self.memory_locations = None
         self.memory_senses = None
         self.memory_location_sds = None
+        self.invalid_slots = None
 
         self.sensory_factor = sensory_dim ** -0.5
         self.location_factor = location_dim ** -0.5
@@ -72,6 +81,7 @@ class BidirectionalMemory(torch.nn.Module):
         self.memory_locations = None
         self.memory_senses = None
         self.memory_location_sds = None
+        self.invalid_slots = None
 
     def break_training_graph(self):
         if self.memory_locations is not None:
@@ -80,6 +90,8 @@ class BidirectionalMemory(torch.nn.Module):
             self.memory_senses = self.memory_senses.detach()
         if self.memory_location_sds is not None:
             self.memory_location_sds = self.memory_location_sds.detach()
+        if self.invalid_slots is not None:
+            self.invalid_slots = self.invalid_slots.detach()
 
     def score(self, query: torch.Tensor, keys: torch.Tensor, factor: float=1.0):
         """
@@ -99,7 +111,7 @@ class BidirectionalMemory(torch.nn.Module):
         else:
             return result
 
-    def get_location_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, mask_diagonal: bool=False, raw_weights: bool=False):
+    def get_location_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, mask_diagonal: bool=False, raw_weights: bool=False, detach_locations: bool=True):
         """
         Get the affinity of a location to the memory locations.
 
@@ -116,8 +128,14 @@ class BidirectionalMemory(torch.nn.Module):
 
 
         # shape (batch_size, num_queries, num_keys, location_dim)
-        location_delta = location[..., None, :] - self.memory_locations[..., None, :, :]
-        location_delta_sd = location_sd[..., None, :] + self.memory_location_sds[..., None, :, :]
+        memory_locations = self.memory_locations
+        memory_location_sds = self.memory_location_sds
+        if detach_locations:
+            memory_locations = memory_locations.detach()
+            memory_location_sds = memory_location_sds.detach()
+
+        location_delta = location[..., None, :] - memory_locations[..., None, :, :]
+        location_delta_sd = location_sd[..., None, :] + memory_location_sds[..., None, :, :]
 
         log_location_affinity = (
             - 0.5 * (location_delta / (location_delta_sd + 1e-8)).pow(2).sum(dim=-1) 
@@ -141,47 +159,92 @@ class BidirectionalMemory(torch.nn.Module):
 
         return location_weights
     
-    def get_location_and_sensory_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor):
+    def get_location_and_sensory_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor,
+                                          detach_senses: bool=True, detach_locations: bool=True):
         """
         Get the affinity of a location and sensory to the memory locations and senses.
         """
-        location_affinity = self.get_location_affinity(location, location_sd, raw_weights=True)
-        sensory_affinity = self.score(sensory, self.memory_senses, factor=self.sensory_factor)
+        location_affinity = self.get_location_affinity(location, location_sd, raw_weights=True, detach_locations=detach_locations)
+        memory_senses = self.memory_senses
+        if detach_senses:
+            memory_senses = memory_senses.detach()
+        
+        sensory_affinity = self.score(sensory, memory_senses, factor=self.sensory_factor)
         return location_affinity, sensory_affinity
 
-    def read(self, location: torch.Tensor, location_sd: torch.Tensor):
+    def read(self, location: torch.Tensor, location_sd: torch.Tensor, detach_senses: bool=True, detach_locations: bool=True):
         """
         Read from the memory cache by keys.
 
         :param location: The location to read from the memory cache. Has shape (batch_size, query_dim).
         """
         if self.memory_locations is None:
-            return torch.zeros(location.shape[0], self.sensory_dim, device=location.device, dtype=location.dtype)
+            if location.ndim < 3:
+                return torch.zeros(location.shape[0], self.sensory_dim, device=location.device, dtype=location.dtype)
+            else:
+                return torch.zeros(location.shape[0], location.shape[1], self.sensory_dim, device=location.device, dtype=location.dtype)
+                
+        squeeze = False
+        if location.ndim < 3:
+            squeeze = True
+            location_sd = location_sd[..., None, :]
+        
+        if location_sd.ndim < 3:
+            location_sd = location_sd[..., None, :]
 
-        location_weights = self.get_location_affinity(location, location_sd)
+        # shape (batch_size, num_queries, num_keys)
+        location_weights = self.get_location_affinity(location, location_sd, detach_locations=detach_locations)
 
-        # pre_sense has shape (batch_size, embed_dim)
-        pre_sense = torch.bmm(location_weights, self.memory_senses).squeeze(dim=-2)
+        # pre_sense has shape (batch_size, num_queries, embed_dim)
+        # memory_senses has shape (batch_size, num_keys, embed_dim)
+        memory_senses = self.memory_senses
+        if detach_senses:
+            memory_senses = memory_senses.detach()
+        pre_sense = torch.bmm(location_weights, memory_senses)
+
+        if squeeze:
+            pre_sense = pre_sense.squeeze(-2)
+
         sense = self.sensory_read_proj(pre_sense)
 
         return sense
 
-    def read_location_and_sensory(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor):
+    def read_location_and_sensory(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor,
+                                  skip_projection: bool=False, detach_senses: bool=True, detach_locations: bool=True):
         """
         Read from the memory cache by location and sensory.
         """
-        sensory = self.sensory_proj(sensory)
-        location_affinity, sensory_affinity = self.get_location_and_sensory_affinity(location, location_sd, sensory)
+        if not skip_projection:
+            sensory = self.sensory_proj(sensory)
+
+        location_affinity, sensory_affinity = self.get_location_and_sensory_affinity(
+            location, location_sd, sensory, detach_senses=detach_senses, detach_locations=detach_locations
+        )
         affinity = location_affinity * sensory_affinity
         scores = torch.softmax(affinity, dim=-1)
-        location_out = torch.bmm(scores, self.memory_locations).squeeze(dim=-2)
-        location_sd_out = torch.bmm(scores, self.memory_location_sds).squeeze(dim=-2)
-        sensory_out = torch.bmm(scores, self.memory_senses).squeeze(dim=-2)
-        sensory_out = self.sensory_read_proj(sensory_out)
+
+        memory_locations = self.memory_locations
+        memory_location_sds = self.memory_location_sds
+        if detach_locations:
+            memory_locations = memory_locations.detach()
+            memory_location_sds = memory_location_sds.detach()
+
+        location_out = torch.bmm(scores, memory_locations).squeeze(dim=-2)
+        location_sd_out = torch.bmm(scores, memory_location_sds).squeeze(dim=-2)
+
+        memory_senses = self.memory_senses
+        if detach_senses:
+            memory_senses = memory_senses.detach()
+
+        sensory_out = torch.bmm(scores, memory_senses).squeeze(dim=-2)
+        if not skip_projection:
+            sensory_out = self.sensory_read_proj(sensory_out)
+
         return location_out, location_sd_out, sensory_out
 
 
-    def search(self, senses: torch.Tensor, num_results: int=1, threshold: float=0.1, diversity_steps: int=5, detach_locations: bool=False):
+    def search(self, senses: torch.Tensor, num_results: int=1, threshold: float=0.0, diversity_steps: int=5,
+             detach_locations: bool=True, detach_senses: bool=True):
         """
         Search the senses for the most similar senses to queries, returning the closest matching keys.
 
@@ -193,54 +256,77 @@ class BidirectionalMemory(torch.nn.Module):
         :return: The top locations, the top senses, a boolean mask of whether each query was found, and the number of found queries.
         """
         if self.memory_senses is None:
-            return (
-                torch.zeros(self.batch_size, num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
-                torch.ones(self.batch_size, num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
-                torch.zeros(self.batch_size, num_results, self.sensory_dim, device=senses.device, dtype=senses.dtype),
-                torch.zeros(self.batch_size, num_results, device=senses.device, dtype=torch.bool),
-                torch.zeros(self.batch_size, device=senses.device, dtype=torch.long)
-            )
+            if senses.ndim < 3:
+                return (
+                    torch.zeros(self.batch_size, num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
+                    torch.ones(self.batch_size, num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
+                    torch.zeros(self.batch_size, num_results, self.sensory_dim, device=senses.device, dtype=senses.dtype),
+                    torch.zeros(self.batch_size, num_results, device=senses.device, dtype=torch.bool),
+                    torch.zeros(self.batch_size, device=senses.device, dtype=torch.long)
+                )
+            else:
+                return (
+                    torch.zeros(self.batch_size, senses.shape[1], num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
+                    torch.ones(self.batch_size, senses.shape[1], num_results, self.location_dim, device=senses.device, dtype=senses.dtype),
+                    torch.zeros(self.batch_size, senses.shape[1], num_results, self.sensory_dim, device=senses.device, dtype=senses.dtype),
+                    torch.zeros(self.batch_size, senses.shape[1], num_results, device=senses.device, dtype=torch.bool),
+                    torch.zeros(self.batch_size, senses.shape[1], device=senses.device, dtype=torch.long)
+                )
 
         senses = self.sensory_proj(senses)
 
+        squeeze = False
+        if senses.ndim < 3:
+            senses = senses.unsqueeze(-2)
+            squeeze = True
+
         # scores has shape (batch_size, num_keys) or (batch_size, num_queries, num_keys)
         memory_senses = self.memory_senses
+        if detach_senses:
+            memory_senses = memory_senses.detach()
+        
         scores = self.score(senses, memory_senses, factor=self.sensory_factor)
+
+        memory_locations = self.memory_locations
+        memory_location_sds = self.memory_location_sds
+        if detach_locations:
+            memory_locations = memory_locations.detach()
+            memory_location_sds = memory_location_sds.detach()
 
         # now do attention to institute score competition among nearby locations
         if diversity_steps > 0:
             # neighbor weights over memory locations (B, K, K)
-            memory_locations = self.memory_locations
-            memory_location_sds = self.memory_location_sds
-            if detach_locations:
-                memory_locations = memory_locations.detach()
-                memory_location_sds = memory_location_sds.detach()
-            location_weights = self.get_location_affinity(memory_locations, memory_location_sds, mask_diagonal=True)
-
-            if scores.ndim < location_weights.ndim:
-                s = scores.unqueeze(-2)
-            else:
-                s = scores
+            location_weights = self.get_location_affinity(memory_locations, memory_location_sds, mask_diagonal=True, detach_locations=detach_locations)
 
             s = scores
+
             for _ in range(diversity_steps):
                 neighbor_mass = torch.bmm(s, location_weights.transpose(-2, -1)) # (B, Q, K)
                 s = (s - neighbor_mass).clamp_min(0)
                 s = s / (s.sum(dim=-1, keepdim=True) + 1e-12)                 # renorm
 
-            if s.ndim > scores.ndim:
-                s = s.squeeze(-2)
-
             scores = s
 
         # now scores are filered to refer to different locations, so we can pict the top results
-        num_results = min(num_results, scores.shape[1])
+        num_results = min(num_results, scores.shape[-1])
         top_scores, top_indices = scores.topk(num_results, dim=-1, largest=True, sorted=True)
+
+        # now scores is (batch_size, num_queries, num_results) --> (batch_size, num_queries * num_results)
+        top_scores = top_scores.view(top_scores.shape[0], -1)
+        top_indices = top_indices.view(top_indices.shape[0], -1)
+
         top_location_indices = top_indices[..., None].expand(-1, -1, self.location_dim)
         top_sensory_indices = top_indices[..., None].expand(-1, -1, self.embed_dim)
-        top_locations = self.memory_locations.gather(dim=1, index=top_location_indices)
-        top_location_sds = self.memory_location_sds.gather(dim=1, index=top_location_indices)
-        top_senses = self.memory_senses.gather(dim=1, index=top_sensory_indices)
+        top_locations = memory_locations.gather(dim=1, index=top_location_indices)
+        top_location_sds = memory_location_sds.gather(dim=1, index=top_location_indices)
+        top_senses = memory_senses.gather(dim=1, index=top_sensory_indices)
+
+        # unfold to (batch_size, num_queries, num_results, location_dim)
+        if not squeeze:
+            top_scores = top_scores.view(top_scores.shape[0], -1, num_results)
+            top_locations = top_locations.view(top_locations.shape[0], -1, num_results, self.location_dim)
+            top_location_sds = top_location_sds.view(top_location_sds.shape[0], -1, num_results, self.location_dim)
+            top_senses = top_senses.view(top_senses.shape[0], -1, num_results, self.embed_dim)
 
         found = top_scores > threshold
         num_found = found.long().sum(dim=-1)
@@ -249,7 +335,7 @@ class BidirectionalMemory(torch.nn.Module):
 
         return top_locations, top_location_sds, top_senses, found, num_found
 
-    def write(self, location: torch.Tensor, location_sd: torch.Tensor, sense: torch.Tensor):
+    def write(self, location: torch.Tensor, location_sd: torch.Tensor, sense: torch.Tensor, update: bool=False):
         """
         Write to the memory cache. 
 
@@ -260,8 +346,163 @@ class BidirectionalMemory(torch.nn.Module):
             self.memory_locations = location[:, None, :]
             self.memory_location_sds = location_sd[:, None, :]
             self.memory_senses = sense[:, None, :]
-        else:
+
+            return
+        
+        if not update:
             self.memory_locations = torch.cat([self.memory_locations, location[:, None, :]], dim=-2)
             self.memory_location_sds = torch.cat([self.memory_location_sds, location_sd[:, None, :]], dim=-2)
             self.memory_senses = torch.cat([self.memory_senses, sense[:, None, :]], dim=-2)
+
+            self.truncate()
+            return
+
+        # check to see if the new location matches an existing location within 1 standard deviation
+        location_delta = location[..., None, :] - self.memory_locations
+        location_delta_sd = location_sd[..., None, :] + self.memory_location_sds
+        match_location = torch.norm(location_delta / torch.clamp(location_delta_sd, min=1e-8), dim=-1) < 1.0
+
+        sensory_delta = sense[..., None, :] - self.memory_senses
+        match_sensory = sensory_delta.norm(dim=-1) < 0.05 # * torch.linalg.matrix_norm(self.sensory_proj.weight)
+
+        match = match_location | match_sensory
+
+        if match.any():
+            new_variance = location_sd[..., None, :].pow(2) * self.memory_location_sds.pow(2) / (
+                torch.clamp(location_sd[..., None, :].pow(2) + self.memory_location_sds.pow(2), min=1e-8)
+            )
+            optimal_location = (
+                location[..., None, :] / torch.clamp(location_sd[..., None, :].pow(2), min=1e-8)
+                + self.memory_locations / torch.clamp(self.memory_location_sds.pow(2), min=1e-8)
+            ) * new_variance
+            optimal_sd = new_variance.sqrt()
+
+            optimal_sense = (
+                sense[..., None, :] / torch.clamp(torch.norm(location_sd[..., None, :], dim=-1, keepdim=True).pow(2), min=1e-8)
+                + self.memory_senses / torch.clamp(torch.norm(self.memory_location_sds, dim=-1, keepdim=True).pow(2), min=1e-8) 
+            ) / (
+                1 / torch.clamp(torch.norm(location_sd[..., None, :], dim=-1, keepdim=True).pow(2), min=1e-8)
+                + 1 / torch.clamp(torch.norm(self.memory_location_sds, dim=-1, keepdim=True).pow(2), min=1e-8)
+            )
+
+            self.memory_locations = torch.where(match[..., None], optimal_location, self.memory_locations)
+            self.memory_location_sds = torch.where(match[..., None], optimal_sd, self.memory_location_sds)
+            self.memory_senses = torch.where(match[..., None], optimal_sense, self.memory_senses)
+
+            # now, to handle the rows that didn't match, we need to add them to the memory
+            used = match.any(dim=-1)
+            if (~used).any():
+                locations = torch.where(~used, location, torch.zeros_like(location))
+                location_sds = torch.where(~used, location_sd, torch.ones_like(location_sd))
+                sense = torch.where(~used, sense, torch.zeros_like(sense))
+                self.memory_locations = torch.cat([self.memory_locations, locations[:, None, :]], dim=-2)
+                self.memory_location_sds = torch.cat([self.memory_location_sds, location_sds[:, None, :]], dim=-2)
+                self.memory_senses = torch.cat([self.memory_senses, sense[:, None, :]], dim=-2)
+
+                if self.invalid_slots is None:
+                    self.invalid_slots = torch.cat([
+                        torch.zeros(self.batch_size, match.shape[-1], device=location.device, dtype=torch.bool),
+                        used.unsqueeze(-1),
+                    ], dim=-1)
+                else:
+                    num_invalid = self.invalid_slots.long().sum(dim=-1)
+                    num_to_remove = num_invalid.min()
+                    if num_to_remove >= 1:
+                        # Level the invalid slots to remove
+                        num_after_remove = self.memory_locations.shape[1] - num_to_remove
+
+                        # first, index the invalid slots
+                        invalid_indexed = self.invalid_slots.long().cumsum(dim=-1)
+
+                        # eliminate slots that have indices larger than what we will remove
+                        slots_to_remove = (invalid_indexed <= num_to_remove) & (invalid_indexed > 0)
+                        slots_to_keep = ~slots_to_remove[..., None]
+                        view_tuple = (self.batch_size, num_after_remove, -1)
+
+                        self.memory_locations = torch.masked_select(self.memory_locations, slots_to_keep).view(*view_tuple)
+                        self.memory_location_sds = torch.masked_select(self.memory_location_sds, slots_to_keep).view(*view_tuple)
+                        self.memory_senses = torch.masked_select(self.memory_senses, slots_to_keep).view(*view_tuple)
+                        self.invalid_slots = torch.masked_select(self.invalid_slots, slots_to_keep).view(self.batch_size, -1)
+        
+        else:
+
+            self.memory_locations = torch.cat([self.memory_locations, location[:, None, :]], dim=-2)
+            self.memory_location_sds = torch.cat([self.memory_location_sds, location_sd[:, None, :]], dim=-2)
+            self.memory_senses = torch.cat([self.memory_senses, sense[:, None, :]], dim=-2)
+        
+        self.truncate()
+
+    def truncate(self):
+        if self.max_memory_size < 0:
+            return
+        
+        # TODO: prune more intelligently
+        if self.memory_locations is not None:
+            if self.memory_locations.shape[1] > self.max_memory_size:
+                self.memory_locations = self.memory_locations[:, -self.max_memory_size:]
+                self.memory_location_sds = self.memory_location_sds[:, -self.max_memory_size:]
+                self.memory_senses = self.memory_senses[:, -self.max_memory_size:]
+                if self.invalid_slots is not None:
+                    self.invalid_slots = self.invalid_slots[:, -self.max_memory_size:]
+
+    def interpret(self, location_model: torch.nn.Module, drive_classifier: torch.nn.Module, steps: int=10):
+        """
+        Interpret the memory locations using a location model.
+        """
+        if self.memory_locations is None:
+            return None, None
+
+        # first, read the memory up to a fixed point
+        memory_locations = self.memory_locations.detach()
+        memory_location_sds = self.memory_location_sds.detach()
+        memory_senses = self.memory_senses.detach()
+
+        for i in range(steps):
+            memory_locations, memory_location_sds, memory_senses = self.read_location_and_sensory(
+                memory_locations, memory_location_sds, memory_senses, skip_projection=True
+            )
+
+            # TODO: prune locations that are close to each other to reduce the number of locations to interpret
+
+        memory_location_projected = location_model(memory_locations)
+        memory_senses = self.sensory_read_proj(memory_senses)
+
+        # will generate a softmax over "poison", "edible", and "neutral" drives
+        # so we need to take the argmax to get the drive target
+        drive_targets = torch.argmax(drive_classifier(memory_senses), dim=-1)
+
+        return memory_location_projected, drive_targets
+
+    def refine(self, location: torch.Tensor, location_sd: torch.Tensor, drive_classifier: torch.nn.Module,
+               steps: int=100, eta: float=0.01):
+        """
+        Refine the memory locations using a drive classifier.
+        """
+
+        sense = self.read(location, location_sd, detach_senses=False, detach_locations=False)
+        drive_targets = drive_classifier(sense)
+        drive_to_search = drive_targets.argmax(dim=-1)
+
+        print(f"Initial drive targets: {drive_targets[0].detach().cpu().numpy().tolist()}")
+
+        for i in range(steps):
+            
+            dloc, = torch.autograd.grad(drive_targets[..., drive_to_search], (location,), 
+                                            create_graph=True, retain_graph=True)
+            
+            location = location + eta * dloc
+            
+            sense = self.read(location, location_sd, detach_senses=False, detach_locations=False)
+            drive_targets = drive_classifier(sense)
+        
+            print(f"{i}: Drive targets: {drive_targets[0].detach().cpu().numpy().tolist()}")
+
+        return location, location_sd, sense
+
+
+    def regularize(self, loss):
+        sensory_mat = self.sensory_read_proj.weight @ self.sensory_proj.weight
+
+        sensory_loss = torch.linalg.norm(sensory_mat - torch.eye(self.sensory_dim, device=sensory_mat.device))
+        return loss + sensory_loss
     

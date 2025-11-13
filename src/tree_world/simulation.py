@@ -1,9 +1,11 @@
 import random
+import math
 import sys
 import torch
-from typing import List
+from typing import List, Tuple
 
 from tree_world.embeddings import embed_text_sentence_transformers
+from tree_world.live_viz_matplotlib import LiveVizMPL
 
 
 
@@ -19,12 +21,13 @@ class TreeWorldConfig:
 
     # Model 
     model_type: str = "AgentModel"
+    simple_tem: bool = True
 
     # Sensory inputs
     sensory_embedding_dim: int = 1024
     sensory_embedding_model: str = "BAAI/bge-large-en-v1.5"
     
-    location_dim: int = 16
+    location_dim: int = 2
     embed_dim: int = 32
     dropout: float = 0.1
     num_guesses: int = 5
@@ -35,14 +38,32 @@ class TreeWorldConfig:
     heading_tolerance: float = 0.9
 
     # Trees
-    num_trees: int = 50
+    num_trees: int = 25
     tree_spacing: float = 100
     regrow_every: int = 1000
     max_fruit: int = 5
     poisonous_probability: float = 0.3
     poison_fruits: List[str] = ["manchineel", "nightshade", "strychnine fruit", "desert rose"]
     edible_fruits: List[str] = ["apple", "banana", "cherry", "date", "elderberry", "fig", "mango", "nectarine", "orange", "papaya", "pear", "plum"]
-    can_see_fruit_distance: float = 10.0
+    can_see_fruit_distance: float = 100.0
+
+    tree_ids = [
+        "Joey", "Chandler", "Ross", "Rachel", "Monica", "Phoebe", "Gunther", "Bob", "George", "Kramer",
+        "Stewie", "Brian", "Peter", "Lois", "Meg", "Chris", "Buster", "Bill", "Suzie", "Stanton",
+        "Bruce", "Clinton", "Barack", "Donald", "Joe", "Kamala", "Earnest", "Thomas", "Andrew", 
+        "Hillary", "Sarah", "Elizabeth", "Abigail", "Mary", "Ann", "Jane", "Lydia", "Hannah", "Ralph",
+        "Richard", "Jimmy", "Fred", "Barney", "Homer", "Bart", "Lisa", "Maggie", "Ned", 
+        "Maude", "Sam", "Todd", "Tommy", "Ulysses", "Victor", "Winston", "Xavier", "Albert",
+        "Ben", "Carl", "Dave", "Eric", "Frank", "Hal", "Ian", "Jack", "Larry", "Michael", "Nate", 
+        "Oliver", "Paul", "Quincy", "Terry", "Ruprecht", "Sergei", "Tobias", "Monty", "Nigel", "Oscar",
+        "Peter", "Quentin", "Rupert", "Samson", "Toby", "Yogi",
+        "Ziggy", "Alice", "Charlie", "Diana", "Eve", "Isaac",
+        "Karen", "Larry", "Mia", "Olivia", "Paul",  "Uma", "Wendy", "Yvonne", "Zachary", "Ada", "Bertha", "Clara",
+        "Diana", "Eleanor", "Florence", "Grace", "Irene", "Julia", "Katherine", "Lillian", "Mary",
+        "Nora", "Ophelia", "Patricia", "Queenie", "Rebecca", "Theresa", "Ursula", "Victoria",
+        "Xandra", "Zoe", "Agatha", "Bella", "Chloe", "Diana", "Ella", "Fiona", "Greta",
+        "Iris", "Jasmine",
+    ]
 
 
 class Tree:
@@ -52,7 +73,9 @@ class Tree:
     It has a fruit, which can be harvested by the agent.
     It can regrow fruit over time.
     """
-    def __init__(self, name: str,embedding: torch.Tensor, location: torch.Tensor, max_fruit: int, is_poisonous: bool, regrow_every: int):
+    def __init__(self, tree_id: str, name: str, embedding: torch.Tensor, location: torch.Tensor, 
+                       max_fruit: int, is_poisonous: bool, regrow_every: int):
+        self.tree_id = tree_id
         self.name = name
         self.embedding = embedding
         self.location = location
@@ -78,10 +101,6 @@ class Tree:
 
 
 class Sensor:
-    def __init__(self, trees: List[Tree]):
-        self.trees = trees
-        self.tree_locations = torch.stack([tree.location for tree in trees])
-
     def sense(self, world: 'TreeWorld', position: torch.Tensor, heading: torch.Tensor):
         raise NotImplementedError("Subclasses must implement this method")
     
@@ -89,11 +108,49 @@ class Sensor:
     def from_config(cls, config: TreeWorldConfig):
         if config.sensor_type == "SimpleSensor":
             return SimpleSensor.from_config(config)
+        elif config.sensor_type == "DirectionalSensor":
+            return DirectionalSensor.from_config(config)
         else:
             raise ValueError(f"Unknown sensor type: {config.sensor_type}")
 
 
 class SimpleSensor(Sensor):
+    """
+    Return a distance-weighted average of the tree embeddings.
+
+    This is a diffusion model; it models the tree locations as a Gaussian distribution, and the sensor is a Gaussian kernel.
+    """
+
+    def sense(self, world: 'TreeWorld', position: torch.Tensor, heading: torch.Tensor):
+        tree_locations = world.get_tree_locations()
+       
+        # in a diffusion model, we have 1/2 du/dt = \sum_i d^2u/dx_i^2 = \Delta u (\Delta = Laplacian)
+        # This is for u(x, t) = c t^{-d/2} \exp(-1/(2t) \|x\|^2) where d is the dimension of the space.
+        # The "variance" of a diffusion is t^{1/2}; t is a virtual time parameter.
+        # we want to choose t so that at config.max_sense_distance, the kernel is 0.01.
+        # Now, u(0, t) = c t^{d/2}, and we want u(0, t) = 1 and u(config.max_sense_distance, t) = a = small number.
+        # This reduces to u(x, t) = \exp(-1/(2t) \|x\|^2) with \exp(-r^2 / 2t) = a ==> t = -r^2 / 2 \log(a).
+        # for r = config.max_sense_distance
+        a = 0.1
+        virtual_time = world.config.max_sense_distance**2 / 2 / math.log(1/a)
+        distances = torch.norm(tree_locations - position[None, :], dim=1)
+        kernel = torch.exp(-0.5 * (distances).pow(2) / virtual_time)
+        
+        tree_embeddings = world.get_tree_embeddings()
+        embedding = torch.mm(kernel[None, :], tree_embeddings).squeeze()
+
+        closest_index = torch.argmin(distances)
+        closest_distance = distances[closest_index]
+        closest_tree = world.trees[closest_index]
+
+        return closest_distance, embedding, closest_tree
+
+    @classmethod
+    def from_config(cls, config: TreeWorldConfig):
+        return cls()
+
+
+class DirectionalSensor(Sensor):
     """
     Given a position and a heading, return the distance and embedding of the tree closest to the heading.
 
@@ -134,10 +191,12 @@ class SimpleSensor(Sensor):
         
         if distance > self.max_distance:
             # print(f"Tree found at distance {distance} along heading {heading.numpy().tolist()} but is too far, returning None")
-            return None, None
+            return None, None, None
+
+        # TODO: return the closest tree if you're not looking at one?
 
         # print(f"Tree ({world.trees[tree_index].name}) found at distance {distance} and index {tree_index}")
-        return distance, world.trees[tree_index]
+        return distance, world.tree_embeddings[tree_index], world.trees[tree_index]
 
     @classmethod
     def from_config(cls, config: TreeWorldConfig):
@@ -258,8 +317,7 @@ class Agent:
 
 
     def step(self, world: 'TreeWorld'):
-        distance, tree = self.sensor.sense(world, self.location, self.heading)
-        embedding = tree.embedding if tree is not None else None
+        distance, embedding, tree = self.sensor.sense(world, self.location, self.heading)
         num_fruit = tree.fruit if tree is not None else 0
         embedding = self.model.get_tree_embedding(distance, embedding, num_fruit)
 
@@ -269,6 +327,8 @@ class Agent:
             self.fruit_eaten += 1
             if tree.is_poisonous:
                 self.poisonous_fruit_eaten += 1
+
+            # NOTE: this requires the agent to face the tree when eating fruit
             self.eat_fruit(1, tree.is_poisonous)
             tree.harvest_fruit()
         
@@ -310,6 +370,12 @@ class Agent:
         elif config.model_type == "TEMAgent":
             from tree_world.agents import TEMAgent
             model = TEMAgent.from_config(config)
+        elif config.model_type == "HomeostaticAgent":
+            from tree_world.agents import HomeostaticAgent
+            model = HomeostaticAgent.from_config(config)
+        elif config.model_type == "PathTracingTEMAgent":
+            from tree_world.agents import PathTracingTEMAgent
+            model = PathTracingTEMAgent.from_config(config)
         else:
             raise ValueError(f"Unknown model type: {config.model_type}")
 
@@ -348,15 +414,53 @@ class TreeWorld:
 
         self.last_target_location_estimated = None
 
-        self.tree_names, self.tree_embeddings_type, self.tree_name_embeddings = self.make_name_embeddings()
+        self.tree_names, self.tree_embeddings_type, self.tree_name_embeddings, self.tree_id_embeddings, self.tree_id_embeddings_dict = (
+            self.make_name_embeddings()
+        )
 
     def get_tree_locations(self):
         return self.tree_locations
 
     def make_name_embeddings(self):
-        tree_types = config.poison_fruits + config.edible_fruits
-        tree_embeddings = embed_text_sentence_transformers(tree_types, config.sensory_embedding_model)
-        return tree_types, tree_embeddings, {tree_type: tree_embedding for tree_type, tree_embedding in zip(tree_types, tree_embeddings)}
+        tree_types = self.config.poison_fruits + self.config.edible_fruits
+        tree_embeddings = embed_text_sentence_transformers(tree_types, self.config.sensory_embedding_model)
+        tree_id_embeddings = embed_text_sentence_transformers(self.config.tree_ids, self.config.sensory_embedding_model)
+        return (
+            tree_types, 
+            tree_embeddings, 
+            {tree_type: tree_embedding for tree_type, tree_embedding in zip(tree_types, tree_embeddings)},
+            tree_id_embeddings,
+            {tree_id: tree_id_embedding for tree_id, tree_id_embedding in zip(self.config.tree_ids, tree_id_embeddings)}
+        )
+
+    def get_tree_ids_from_embeddings(self, embeddings: torch.Tensor):
+        # matches will be (batch_size, num_trees, embed_dim) @ (embed_dim, num_tree_ids) = (batch_size, num_trees, num_tree_ids)
+        squeeze = False
+        if embeddings.ndim == 2:
+            squeeze = True
+            embeddings = embeddings[None, :, :]
+        matches = torch.matmul(embeddings, self.tree_id_embeddings.transpose(0, 1).unsqueeze(0))
+
+        # id_idxs will be (batch_size, num_trees)
+        id_idxs = matches.argmax(dim=-1)
+
+        all_tree_ids = []
+        for batch in range(embeddings.shape[0]):
+            tree_ids = []
+            for tree in range(embeddings.shape[1]):
+                id_idx = id_idxs[batch, tree]
+                tree_id = self.config.tree_ids[id_idx]
+                tree_ids.append(tree_id)
+
+            all_tree_ids.append(tree_ids)
+
+        if squeeze:
+            return all_tree_ids[0]
+        else:
+            return all_tree_ids
+
+    def get_tree_embeddings(self):
+        return torch.stack([tree.embedding for tree in self.trees])
 
     def step(self):
         self.agent.step(self)
@@ -415,50 +519,90 @@ class TreeWorld:
         for tree in self.trees:
             tree.regrow_fruit()
     
-    def run(self, num_steps: int, record=False):
+    def run(self, num_steps: int, record=False, allow_death=True, live_viz=None):
         self.reset()
-
         if record:
             self.record_positions = [self.agent.location.numpy().tolist()]
             self.record_healths = [self.agent.health]
 
         for i in range(num_steps):
             self.step()
+
+            if live_viz is not None:
+                live_viz.update(i)
+
             if record:
                 self.record_positions.append(self.agent.location.numpy().tolist())
                 self.record_healths.append(self.agent.health)
 
-            # print(f"Step {i}: Agent health: {self.agent.health} Agent location: {self.agent.location.numpy().tolist()}")#, end="\r")
-            sys.stdout.flush()
-
-            if self.agent.health <= 0:
+            if self.agent.health <= 0 and allow_death:
                 return False
 
-            if i % 100 == 0 and i > 0:
-                if hasattr(self.agent.model, "train"):
-                    # print("Training agent model")
-                    self.agent.model.train()
-                    # print("Agent model trained")
-
+            if i % 100 == 0 and i > 0 and hasattr(self.agent.model, "train"):
+                self.agent.model.train()
         return True
 
-    @classmethod
-    def random_from_config(cls, config: TreeWorldConfig):
+    def randomize(self):
+        # recreate the world with new trees, without recreating the agent
+        config = self.config
+
+        tree_ids = []
         tree_types = []
         poison_trees = []
         for i in range(config.num_trees):
             is_poisonous = random.random() < config.poisonous_probability
+            tree_id = random.choice(config.tree_ids)
+            tree_ids.append(tree_id)
             name = random.choice(config.poison_fruits) if is_poisonous else random.choice(config.edible_fruits)
             tree_types.append(name)
             poison_trees.append(is_poisonous)
         
         tree_locations = torch.randn(config.num_trees, config.dim) * config.tree_spacing * config.dim
-        tree_embeddings = embed_text_sentence_transformers(tree_types, config.sensory_embedding_model)
+        tree_embeddings = (
+            embed_text_sentence_transformers(tree_types, config.sensory_embedding_model)
+            + embed_text_sentence_transformers(tree_ids, config.sensory_embedding_model)
+        )
         assert tree_embeddings.shape == (config.num_trees, config.sensory_embedding_dim)
 
         trees = []
         for i in range(config.num_trees):
-            tree = Tree(tree_types[i], tree_embeddings[i], tree_locations[i], config.max_fruit, poison_trees[i], config.regrow_every)
+            tree = Tree(tree_ids[i], tree_types[i], tree_embeddings[i], tree_locations[i], config.max_fruit, poison_trees[i], config.regrow_every)
+            trees.append(tree)
+
+        self.trees = trees
+        self.tree_locations = torch.stack([tree.location for tree in trees])
+        self.tree_names, self.tree_embeddings_type, self.tree_name_embeddings, self.tree_id_embeddings, self.tree_id_embeddings_dict = (
+            self.make_name_embeddings()
+        )
+
+        self.reset()
+
+        dists = torch.cdist(tree_embeddings, tree_embeddings)
+        # print(f"dists: {dists.numpy()}")
+
+    @classmethod
+    def random_from_config(cls, config: TreeWorldConfig):
+        tree_ids = []
+        tree_types = []
+        poison_trees = []
+        for i in range(config.num_trees):
+            is_poisonous = random.random() < config.poisonous_probability
+            tree_id = random.choice(config.tree_ids)
+            tree_ids.append(tree_id)
+            name = random.choice(config.poison_fruits) if is_poisonous else random.choice(config.edible_fruits)
+            tree_types.append(name)
+            poison_trees.append(is_poisonous)
+        
+        tree_locations = torch.randn(config.num_trees, config.dim) * config.tree_spacing * config.dim
+        tree_embeddings = (
+            embed_text_sentence_transformers(tree_types, config.sensory_embedding_model)
+            + embed_text_sentence_transformers(tree_ids, config.sensory_embedding_model)
+        )
+        assert tree_embeddings.shape == (config.num_trees, config.sensory_embedding_dim)
+
+        trees = []
+        for i in range(config.num_trees):
+            tree = Tree(tree_ids[i], tree_types[i], tree_embeddings[i], tree_locations[i], config.max_fruit, poison_trees[i], config.regrow_every)
             trees.append(tree)
 
         agent = Agent.from_config(config)
@@ -473,15 +617,21 @@ if __name__ == "__main__":
         steps = 1000
 
     config = TreeWorldConfig()
-    config.model_type = "TEMAgent"   # "StateBasedAgentWithDriveEmbedding"
+    config.model_type = "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
+
     world = TreeWorld.random_from_config(config)
+    viz = LiveVizMPL(world)
 
     runs = 100 if hasattr(world.agent.model, "train") else 1
     print(f"Running {runs} runs")
     print("--------------------------------")
     for i in range(runs):
-        print(f"Running tree world {i} for {steps} steps...")
-        world.run(steps, record=(i == runs - 1))
+        world.randomize()
+        viz.reset()
+
+        s = min([steps, (i + 1) * 1000])
+        print(f"Running tree world {i} for {s} steps...")
+        world.run(s, record=(i == runs - 1), allow_death=False, live_viz=viz)
         print()
         print("Tree world run complete.")
 
@@ -490,6 +640,10 @@ if __name__ == "__main__":
         print(f"Agent poisonous fruit eaten: {world.agent.poisonous_fruit_eaten}")
         print(f"Agent total movement: {world.agent.total_movement}")
         print(f"Agent final location: {torch.norm(world.agent.location).item()}")
+
+        # capture the memory
+        memory = world.agent.model.tem_model.memory
+        torch.save([memory, memory.memory_locations, memory.memory_location_sds, memory.memory_senses], f"memory_example.pt")
 
         # if hasattr(world.agent.model, "train"):
         #     print("Training agent model")
