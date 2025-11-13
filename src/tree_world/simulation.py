@@ -123,6 +123,11 @@ class SimpleSensor(Sensor):
 
     def sense(self, world: 'TreeWorld', position: torch.Tensor, heading: torch.Tensor):
         tree_locations = world.get_tree_locations()
+
+        squeeze = False
+        if position.ndim == 1:
+            squeeze = True
+            position = position[None, :]
        
         # in a diffusion model, we have 1/2 du/dt = \sum_i d^2u/dx_i^2 = \Delta u (\Delta = Laplacian)
         # This is for u(x, t) = c t^{-d/2} \exp(-1/(2t) \|x\|^2) where d is the dimension of the space.
@@ -133,15 +138,22 @@ class SimpleSensor(Sensor):
         # for r = config.max_sense_distance
         a = 0.1
         virtual_time = world.config.max_sense_distance**2 / 2 / math.log(1/a)
-        distances = torch.norm(tree_locations - position[None, :], dim=1)
-        kernel = torch.exp(-0.5 * (distances).pow(2) / virtual_time)
-        
-        tree_embeddings = world.get_tree_embeddings()
-        embedding = torch.mm(kernel[None, :], tree_embeddings).squeeze()
+        distances = torch.norm(tree_locations[:, None] - position[None, :], dim=-1)
+        kernel = torch.exp(-0.5 * (distances).pow(2) / virtual_time)  # shape (num_trees, num_positions)
 
-        closest_index = torch.argmin(distances)
-        closest_distance = distances[closest_index]
-        closest_tree = world.trees[closest_index]
+        tree_embeddings = world.get_tree_embeddings()  # shape (num_trees, embed_dim)
+        embedding = torch.mm(kernel.transpose(0,1), tree_embeddings)
+
+        if squeeze:
+            embedding = embedding.squeeze(0)
+            closest_index = torch.argmin(distances)
+            closest_distance = distances[closest_index]
+            closest_tree = world.trees[closest_index]
+        
+        else:
+            closest_index = torch.argmin(distances, dim=0)
+            closest_distance = distances.gather(0, closest_index[:, None].expand(-1, distances.shape[1])).squeeze()
+            closest_tree = [world.trees[idx] for idx in closest_index]
 
         return closest_distance, embedding, closest_tree
 
