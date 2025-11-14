@@ -1,6 +1,0 @@
-
-/* Hide the “Made with MyST” badge/link in the header/footer */
-a[href*="mystmd.org/made-with-myst"],
-a[href*="mystmd.org/made-with-myst"] span {
-  display: none !important;
-}

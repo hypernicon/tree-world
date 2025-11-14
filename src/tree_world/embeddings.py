@@ -11,7 +11,8 @@ def embed_text_sentence_transformers(text, method="BAAI/bge-large-en-v1.5"):
     if isinstance(text, list):
         if len(text) == 0:
             return None
-        return model.encode(text, convert_to_tensor=True, normalize_embeddings=True)
+        # note that we clone the output to avoid messages about inference tensors not requiring grad
+        return model.encode(text, convert_to_tensor=True, normalize_embeddings=True).clone()
     else:
-        return model.encode([text], convert_to_tensor=True, normalize_embeddings=True)[0]
+        return model.encode([text], convert_to_tensor=True, normalize_embeddings=True)[0].clone()
 

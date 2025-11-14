@@ -111,7 +111,9 @@ class BidirectionalMemory(torch.nn.Module):
         else:
             return result
 
-    def get_location_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, mask_diagonal: bool=False, raw_weights: bool=False, detach_locations: bool=True):
+    def get_location_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, 
+                              match_threshold: float=None, mask_diagonal: bool=False, raw_weights: bool=False, 
+                              detach_locations: bool=True):
         """
         Get the affinity of a location to the memory locations.
 
@@ -135,13 +137,17 @@ class BidirectionalMemory(torch.nn.Module):
             memory_location_sds = memory_location_sds.detach()
 
         location_delta = location[..., None, :] - memory_locations[..., None, :, :]
-        location_delta_sd = location_sd[..., None, :] + memory_location_sds[..., None, :, :]
+        location_delta_var = location_sd[..., None, :]**2 + memory_location_sds[..., None, :, :]**2
 
         log_location_affinity = (
-            - 0.5 * (location_delta / (location_delta_sd + 1e-8)).pow(2).sum(dim=-1) 
-            - 0.5 * math.log(2 * math.pi) * location_delta_sd.shape[-1]
-            - torch.log(location_delta_sd).sum(dim=-1)
+            - 0.5 * (location_delta.pow(2) / (location_delta_var + 1e-8)).pow(2).sum(dim=-1) 
+            - 0.5 * math.log(2 * math.pi) * location_delta_var.shape[-1]
+            - torch.log(location_delta_var).sum(dim=-1)
         )
+
+        if match_threshold is not None:
+            threshold_check = torch.norm(location_delta, dim=-1) > match_threshold
+            log_location_affinity = log_location_affinity.masked_fill(threshold_check, float('-inf'))
 
         if mask_diagonal:
             # TODO: this will fail if num_queries != num_keys or if there is more than one batch dimension
@@ -152,10 +158,15 @@ class BidirectionalMemory(torch.nn.Module):
             return log_location_affinity
 
         # shape (batch_size, num_queries, num_keys)
+        inactive_mask = (log_location_affinity <= float('-inf')).all(dim=-1, keepdim=True)
+        print(f"Inactive mask: {inactive_mask.squeeze().cpu().numpy().tolist()}")
+        print(f"location_delta.min(dim=-1): {torch.norm(location_delta, dim=-1).min(dim=-1).values.squeeze().cpu().numpy().tolist()}")
         location_weights = torch.softmax(log_location_affinity, dim=-1)
-        location_weight_mean = location_weights.mean(dim=-1, keepdim=True)
-        location_weights = location_weights.masked_fill(location_weights < location_weight_mean, 0.0)
-        location_weights = location_weights / (location_weights.sum(dim=-1, keepdim=True) + 1e-8)
+        location_weights = location_weights.masked_fill(inactive_mask, 0.0)
+
+        # location_weight_mean = location_weights.mean(dim=-1, keepdim=True)
+        # location_weights = location_weights.masked_fill(location_weights < location_weight_mean, 0.0)
+        # location_weights = location_weights / (location_weights.sum(dim=-1, keepdim=True) + 1e-8)
 
         return location_weights
     
@@ -172,7 +183,8 @@ class BidirectionalMemory(torch.nn.Module):
         sensory_affinity = self.score(sensory, memory_senses, factor=self.sensory_factor)
         return location_affinity, sensory_affinity
 
-    def read(self, location: torch.Tensor, location_sd: torch.Tensor, detach_senses: bool=True, detach_locations: bool=True):
+    def read(self, location: torch.Tensor, location_sd: torch.Tensor, match_threshold: float=None,
+             detach_senses: bool=True, detach_locations: bool=True):
         """
         Read from the memory cache by keys.
 
@@ -193,7 +205,8 @@ class BidirectionalMemory(torch.nn.Module):
             location_sd = location_sd[..., None, :]
 
         # shape (batch_size, num_queries, num_keys)
-        location_weights = self.get_location_affinity(location, location_sd, detach_locations=detach_locations)
+        location_weights = self.get_location_affinity(location, location_sd, match_threshold=match_threshold, 
+                                                      detach_locations=detach_locations)
 
         # pre_sense has shape (batch_size, num_queries, embed_dim)
         # memory_senses has shape (batch_size, num_keys, embed_dim)
@@ -244,7 +257,7 @@ class BidirectionalMemory(torch.nn.Module):
 
 
     def search(self, senses: torch.Tensor, num_results: int=1, threshold: float=0.0, diversity_steps: int=5,
-             detach_locations: bool=True, detach_senses: bool=True):
+               detach_locations: bool=True, detach_senses: bool=True):
         """
         Search the senses for the most similar senses to queries, returning the closest matching keys.
 
@@ -340,27 +353,37 @@ class BidirectionalMemory(torch.nn.Module):
         Write to the memory cache. 
 
         """
+        if (self.memory_locations is None and location.ndim < 3) or (location.ndim < self.memory_locations.ndim):
+            location = location[None, ...]
+            location_sd = location_sd[None, ...]
+            sense = sense[None, ..., :]
+
+        if self.memory_locations is None:
+            assert location.ndim == location_sd.ndim == sense.ndim == 3
+        else:
+            assert location.ndim == self.memory_locations.ndim == location_sd.ndim == sense.ndim == self.memory_senses.ndim
+        
         sense = self.sensory_proj(sense)
 
         if self.memory_locations is None:
-            self.memory_locations = location[:, None, :]
-            self.memory_location_sds = location_sd[:, None, :]
-            self.memory_senses = sense[:, None, :]
+            self.memory_locations = location
+            self.memory_location_sds = location_sd
+            self.memory_senses = sense
 
             return
         
         if not update:
-            self.memory_locations = torch.cat([self.memory_locations, location[:, None, :]], dim=-2)
-            self.memory_location_sds = torch.cat([self.memory_location_sds, location_sd[:, None, :]], dim=-2)
-            self.memory_senses = torch.cat([self.memory_senses, sense[:, None, :]], dim=-2)
+            self.memory_locations = torch.cat([self.memory_locations, location], dim=-2)
+            self.memory_location_sds = torch.cat([self.memory_location_sds, location_sd], dim=-2)
+            self.memory_senses = torch.cat([self.memory_senses, sense], dim=-2)
 
             self.truncate()
             return
 
         # check to see if the new location matches an existing location within 1 standard deviation
         location_delta = location[..., None, :] - self.memory_locations
-        location_delta_sd = location_sd[..., None, :] + self.memory_location_sds
-        match_location = torch.norm(location_delta / torch.clamp(location_delta_sd, min=1e-8), dim=-1) < 1.0
+        location_delta_var = location_sd[..., None, :]**2 + self.memory_location_sds**2
+        match_location = torch.norm(location_delta / torch.clamp(location_delta_var.sqrt(), min=1e-8), dim=-1) < 1.0
 
         sensory_delta = sense[..., None, :] - self.memory_senses
         match_sensory = sensory_delta.norm(dim=-1) < 0.05 # * torch.linalg.matrix_norm(self.sensory_proj.weight)

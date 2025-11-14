@@ -46,6 +46,8 @@ jobs:
       # Build the site from the subfolder
       - name: Build site
         working-directory: notebook
+        env:
+          PYTHONPATH: ${{ github.workspace }}/src
         run: |
           echo "BASE_URL=$BASE_URL"
           myst build --html
