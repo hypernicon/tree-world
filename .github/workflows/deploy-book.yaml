@@ -62,7 +62,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: notebook/_build/html  # <— change to notebook/_build/site if that’s where it was built
+          path: _build/html
 
       - name: Deploy to GitHub Pages
         id: deployment
