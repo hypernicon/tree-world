@@ -1,12 +1,7 @@
-# .github/workflows/deploy-book.yml
 name: MyST GitHub Pages Deploy
 on:
   push:
     branches: [main]
-
-env:
-  # For project sites (https://USER.github.io/REPO/), set BASE_URL to "/REPO"
-  BASE_URL: /${{ github.event.repository.name }}
 
 permissions:
   contents: read
@@ -14,7 +9,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: 'pages'
+  group: pages
   cancel-in-progress: false
 
 jobs:
@@ -25,20 +20,42 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22.x
+
       - name: Install MyST
         run: npm install -g mystmd
+
+      # Build the site from the subfolder
       - name: Build site
+        working-directory: notebook
         run: myst build --html
+
+      # Debug: show where the build actually went
+      - name: Show build output
+        working-directory: notebook
+        run: |
+          echo "PWD=$(pwd)"
+          echo "Tree under notebook/:"
+          ls -la
+          echo "Tree under notebook/_build:"
+          ls -la _build || true
+          echo "Tree under notebook/_build/html:"
+          ls -la _build/html || true
+          echo "Tree under notebook/_build/site:"
+          ls -la _build/site || true
+
+      # Upload the correct folder. If your MyST writes to _build/site, change the path below.
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: notebooks/_build/html
+          path: notebook/_build/html  # <— change to notebook/_build/site if that’s where it was built
+
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
