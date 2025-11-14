@@ -1,20 +1,5 @@
 # See docs at: https://mystmd.org/guide/frontmatter
 version: 1
-project:
-  id: 7b505daf-76d8-479d-acf0-fa474336dd15
-  # title:
-  # description:
-  # keywords: []
-  # authors: []
-  github: https://github.com/hypernicon/tree-world
-  # To autogenerate a Table of Contents, run "jupyter book init --write-toc"
-site:
-  template: book-theme
-  # options:
-  #   favicon: favicon.ico
-  #   logo: site_logo.png
-
-version: 1
 
 project:
   id: 7b505daf-76d8-479d-acf0-fa474336dd15
