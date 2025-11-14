@@ -21,6 +21,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Debug workspace tree
+        run: |
+          echo "workspace: $GITHUB_WORKSPACE"
+          pwd
+          ls -la
+          echo "Try listing notebook/:"
+          ls -la notebook || true
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
