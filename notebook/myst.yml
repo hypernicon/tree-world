@@ -8,11 +8,11 @@ project:
   jupyter: true
   # Tell MyST which repo to use for Binder kernels
   github: https://github.com/hypernicon/tree-world
-  jupyter:
-    binder:
-      repo: https://github.com/hypernicon/tree-world    # uses your repo's Binder env by default
-      # ref: main                           # optional
-      # url: https://mybinder.org           # default BinderHub
+  # jupyter:
+  #   binder:
+  #     repo: https://github.com/hypernicon/tree-world    # uses your repo's Binder env by default
+  #     # ref: main                           # optional
+  #     # url: https://mybinder.org           # default BinderHub
 
 site:
   # Optional: simple nav from your files/folders
