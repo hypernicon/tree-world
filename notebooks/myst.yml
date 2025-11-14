@@ -13,3 +13,24 @@ site:
   # options:
   #   favicon: favicon.ico
   #   logo: site_logo.png
+
+version: 1
+
+project:
+  id: 7b505daf-76d8-479d-acf0-fa474336dd15
+  title: "TEM-based controller"
+  # Show the "power" button for in-page execution
+  jupyter: true
+  # Tell MyST which repo to use for Binder kernels
+  github: https://github.com/hypernicon/tree-world
+  jupyter:
+    binder:
+      repo: https://github.com/hypernicon/tree-world    # uses your repo's Binder env by default
+      # ref: main                           # optional
+      # url: https://mybinder.org           # default BinderHub
+
+site:
+  # Optional: simple nav from your files/folders
+  # toc:
+  #   - file: notebooks/intro.ipynb
+  #   - file: notebooks/lesson1.md
