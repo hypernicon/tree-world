@@ -11,3 +11,4 @@ project:
       ref: HEAD
 site:
   template: book-theme
+  baseurl: /tree-world
