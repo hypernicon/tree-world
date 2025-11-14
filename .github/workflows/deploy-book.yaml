@@ -8,6 +8,10 @@ permissions:
   pages: write
   id-token: write
 
+env:
+  BASE_URL: /${{ github.event.repository.name }}   # => /tree-world
+
+
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -42,7 +46,9 @@ jobs:
       # Build the site from the subfolder
       - name: Build site
         working-directory: notebook
-        run: myst build --html
+        run: |
+          echo "BASE_URL=$BASE_URL"
+          myst build --html
 
       # Debug: show where the build actually went
       - name: Show build output
