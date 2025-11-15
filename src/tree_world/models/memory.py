@@ -255,6 +255,51 @@ class BidirectionalMemory(torch.nn.Module):
 
         return location_out, location_sd_out, sensory_out
 
+    def sample(self, location: torch.Tensor, location_sd: torch.Tensor, search_key: torch.Tensor, 
+               num_samples: int=1, temperature: float=1.0, sigma_scale: float=25.0,
+               detach_locations: bool=True, detach_senses: bool=True):
+        """
+        Sample from the memory cache using a Gaussian mixture model.
+
+        :param location: The location to sample from. Has shape (batch_size, location_dim).
+        :param location_sd: The standard deviation of the location. Has shape (batch_size, location_dim).
+        :param num_samples: The number of samples to return.
+        :param sigma_scale: The scale of the Gaussian distribution.
+        :param temperature: The temperature of the softmax.
+        :return: The sampled locations, the sampled senses, and the sampled weights.
+        """
+        if self.memory_locations is None:
+            return torch.zeros(self.batch_size, num_samples, self.location_dim, device=location.device, dtype=location.dtype)
+
+        search_key = self.sensory_proj(search_key)
+        
+        if location is None:
+            affinity = self.score(search_key, self.memory_senses, factor=self.sensory_factor)
+
+        else:
+            if location.ndim < 3:
+                location = location[..., None, :]
+                location_sd = location_sd[..., None, :]
+
+            if search_key.ndim < 3:
+                search_key = search_key[..., None, :]
+
+            location_affinity, sensory_affinity = self.get_location_and_sensory_affinity(
+                location, location_sd, search_key, detach_senses=detach_senses, detach_locations=detach_locations
+            )
+            affinity = location_affinity * sensory_affinity
+        
+        scores = torch.softmax(temperature * affinity, dim=-1)
+
+        shape = tuple(list(scores.shape[:-1]) + [num_samples,])
+        t = torch.multinomial(scores.view(-1, scores.shape[-1]), num_samples=num_samples, replacement=True)
+        t = t.view(*shape)
+        t = t.unsqueeze(-1).repeat(1, 1, 1, self.memory_locations.shape[-1]).view(self.batch_size, -1, self.location_dim)
+        loc_mean = self.memory_locations.gather(dim=-2, index=t).view(self.batch_size, -1, num_samples, self.location_dim)
+        loc_sd = self.memory_location_sds.gather(dim=-2, index=t).view(self.batch_size, -1, num_samples, self.location_dim)
+
+        return loc_mean + torch.randn_like(loc_mean) * sigma_scale * loc_sd
+
 
     def search(self, senses: torch.Tensor, num_results: int=1, threshold: float=0.0, diversity_steps: int=5,
                detach_locations: bool=True, detach_senses: bool=True):
