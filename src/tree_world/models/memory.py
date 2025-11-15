@@ -105,7 +105,8 @@ class BidirectionalMemory(torch.nn.Module):
         if query.ndim < keys.ndim:
             query = query[..., None, :]
             squeeze = True
-        return factor * torch.bmm(query, keys.transpose(-2, -1))
+
+        result = factor * torch.bmm(query, keys.transpose(-2, -1))
         if squeeze:
             return result.squeeze(dim=-2)
         else:
@@ -159,8 +160,6 @@ class BidirectionalMemory(torch.nn.Module):
 
         # shape (batch_size, num_queries, num_keys)
         inactive_mask = (log_location_affinity <= float('-inf')).all(dim=-1, keepdim=True)
-        print(f"Inactive mask: {inactive_mask.squeeze().cpu().numpy().tolist()}")
-        print(f"location_delta.min(dim=-1): {torch.norm(location_delta, dim=-1).min(dim=-1).values.squeeze().cpu().numpy().tolist()}")
         location_weights = torch.softmax(log_location_affinity, dim=-1)
         location_weights = location_weights.masked_fill(inactive_mask, 0.0)
 
@@ -184,7 +183,7 @@ class BidirectionalMemory(torch.nn.Module):
         return location_affinity, sensory_affinity
 
     def read(self, location: torch.Tensor, location_sd: torch.Tensor, match_threshold: float=None,
-             detach_senses: bool=True, detach_locations: bool=True):
+             mask_diagonal: bool=False, return_weights: bool=False, detach_senses: bool=True, detach_locations: bool=True):
         """
         Read from the memory cache by keys.
 
@@ -206,7 +205,7 @@ class BidirectionalMemory(torch.nn.Module):
 
         # shape (batch_size, num_queries, num_keys)
         location_weights = self.get_location_affinity(location, location_sd, match_threshold=match_threshold, 
-                                                      detach_locations=detach_locations)
+                                                      mask_diagonal=mask_diagonal, detach_locations=detach_locations)
 
         # pre_sense has shape (batch_size, num_queries, embed_dim)
         # memory_senses has shape (batch_size, num_keys, embed_dim)
@@ -220,7 +219,10 @@ class BidirectionalMemory(torch.nn.Module):
 
         sense = self.sensory_read_proj(pre_sense)
 
-        return sense
+        if return_weights:
+            return sense, location_weights
+        else:
+            return sense
 
     def read_location_and_sensory(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor,
                                   skip_projection: bool=False, detach_senses: bool=True, detach_locations: bool=True):
@@ -398,14 +400,19 @@ class BidirectionalMemory(torch.nn.Module):
         Write to the memory cache. 
 
         """
-        if (self.memory_locations is None and location.ndim < 3) or (location.ndim < self.memory_locations.ndim):
-            location = location[None, ...]
-            location_sd = location_sd[None, ...]
-            sense = sense[None, ..., :]
-
         if self.memory_locations is None:
+            if location.ndim < 3:
+                location = location[None, ...]
+                location_sd = location_sd[None, ...]
+                sense = sense[None, ..., :]
+
             assert location.ndim == location_sd.ndim == sense.ndim == 3
         else:
+            if location.ndim < self.memory_locations.ndim:
+                location = location[None, ...]
+                location_sd = location_sd[None, ...]
+                sense = sense[None, ..., :]
+
             assert location.ndim == self.memory_locations.ndim == location_sd.ndim == sense.ndim == self.memory_senses.ndim
         
         sense = self.sensory_proj(sense)
@@ -512,6 +519,75 @@ class BidirectionalMemory(torch.nn.Module):
                 self.memory_senses = self.memory_senses[:, -self.max_memory_size:]
                 if self.invalid_slots is not None:
                     self.invalid_slots = self.invalid_slots[:, -self.max_memory_size:]
+
+    def generate_prune_candidates(
+        self, error_leave_one_out: torch.Tensor, dependencies_leave_one_out: torch.Tensor, max_error_to_prune: float=0.05
+    ):
+        # remove candidates that are a dependency of another candidate with a lower error
+        sorted_error, error_indices = torch.sort(error_leave_one_out, dim=-1)
+        unsort_indices = torch.argsort(error_indices, dim=-1)
+
+        dependencies = dependencies_leave_one_out.gather(
+            dim=-2, index=error_indices[..., None].repeat(1, 1, dependencies_leave_one_out.shape[-1])
+        ).gather(
+            dim=-1, index=error_indices[..., None, :].repeat(1, dependencies_leave_one_out.shape[-1], 1)
+        )
+
+        # generate a list of all candidates, ignoring dependencies
+        candidates = sorted_error < max_error_to_prune
+
+        # remove candidates with zero dependencies
+        num_dependencies = dependencies.long().sum(dim=-1)
+        candidates = candidates & (num_dependencies > 0)
+
+        # remove candidates that are a dependency of another candidate with a lower error
+        dependencies_mask = torch.tril(dependencies, diagonal=-1).any(dim=-1)
+        candidates = candidates & dependencies_mask
+
+        return candidates.gather(dim=-1, index=unsort_indices) 
+
+    def prune_one_step(self, max_error_to_prune: float=0.05, match_threshold: float=25.0):
+        memory_locations = self.memory_locations
+        memory_location_sds = self.memory_location_sds
+        memory_senses = self.memory_senses
+        memory_sense_out = self.sensory_read_proj(memory_senses)
+
+        sense, weights = self.read(memory_locations, memory_location_sds, match_threshold=match_threshold, mask_diagonal=True,
+                                   return_weights=True)
+        sense_out = self.sensory_proj(sense)
+
+        error = torch.norm(sense_out - memory_sense_out, dim=-1)
+        dependencies = weights > (1 / memory_sense_out.shape[-2])
+
+        prune_candidates = self.generate_prune_candidates(error, dependencies, max_error_to_prune)
+
+        # decide what to prune
+        mem_size = prune_candidates.shape[-1]
+        prune_size = mem_size -prune_candidates.long().sum(dim=-1).max().item()
+        scores = mem_size - prune_candidates.float() * torch.arange(prune_candidates.shape[-1], device=prune_candidates.device)[None, ...]
+
+        _, pruned_indices = torch.topk(scores, k=prune_size, dim=-1)
+
+        pruned_indices_loc = pruned_indices[..., None].repeat(1, 1, memory_locations.shape[-1])
+        pruned_indices_sense = pruned_indices[..., None].repeat(1, 1, memory_senses.shape[-1])
+
+        pruned_memory_locations = memory_locations.gather(dim=-2, index=pruned_indices_loc)
+        pruned_memory_location_sds = memory_location_sds.gather(dim=-2, index=pruned_indices_loc)
+        pruned_memory_senses = memory_senses.gather(dim=-2, index=pruned_indices_sense)
+
+        num_pruned = prune_candidates.sum(dim=-1)
+
+        self.memory_locations = pruned_memory_locations
+        self.memory_location_sds = pruned_memory_location_sds
+        self.memory_senses = pruned_memory_senses
+
+        return num_pruned
+
+    def prune(self, max_error_to_prune: float=0.05, match_threshold: float=25.0, max_prune_steps: int=10):
+        for _ in range(max_prune_steps):
+            num_pruned = self.prune_one_step(max_error_to_prune, match_threshold)
+            if num_pruned.max().item() == 0:
+                break
 
     def interpret(self, location_model: torch.nn.Module, drive_classifier: torch.nn.Module, steps: int=10):
         """
