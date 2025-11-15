@@ -21,4 +21,5 @@ site:
     logo: _static/ajl_logo.png
     toc:
       - file: intro.md
+      - file: simulation-dev.ipynb
       - file: map_testing.ipynb
