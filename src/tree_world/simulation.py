@@ -220,7 +220,7 @@ class DirectionalSensor(Sensor):
         close_trees = dot_products > self.heading_tolerance
         if not close_trees.any():
             # print(f"No tree found along heading {heading.numpy().tolist()}, returning None")
-            return None, None
+            return None, None, None
 
         indices = torch.arange(len(world.trees))[close_trees]
         distances = torch.norm(tree_locations[indices] - position[None, :], dim=1)
