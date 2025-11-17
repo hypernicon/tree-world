@@ -29,7 +29,9 @@ dependencies = [
     "jupyter",
     "torch",
     "ipympl",
-    "sklearn"
+    "sklearn",
+    "torchvision",
+    "graphviz"
 ]
 
 [project.optional-dependencies]
