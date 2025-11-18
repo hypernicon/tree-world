@@ -1,7 +1,7 @@
 import torch
 
 from tree_world.models.utils import TorchBlocker
-from tree_world.models.memory import BidirectionalMemory
+from tree_world.models.memory import SpatialMemory
 
 
 class DriveClassifier(torch.nn.Module):
@@ -136,7 +136,7 @@ class DriveTargetProposer(torch.nn.Module):
     :param dropout: The dropout rate.
     """
 
-    def __init__(self, location_dim: int, sensory_dim: int, num_drives: int, memory: BidirectionalMemory, num_results: int=5, 
+    def __init__(self, location_dim: int, sensory_dim: int, num_drives: int, memory: SpatialMemory, num_results: int=5, 
                        threshold: float=0.1, diversity_steps: int=5, dropout: float=0.1):
         super().__init__()
         self.location_dim = location_dim

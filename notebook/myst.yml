@@ -23,4 +23,5 @@ site:
       - file: intro.md
       - file: simulation-dev.ipynb
       - file: map_testing.ipynb
+      - file: belief-maps.ipynb
       - file: localizing-with-tem.ipynb

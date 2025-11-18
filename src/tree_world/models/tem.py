@@ -1,6 +1,6 @@
 import torch
 import math
-from .memory import BidirectionalMemory
+from .memory import SpatialMemory
 
 """
 Loosely based on the Tolman-Eichenbaum model of memory encoding and retrieval.
@@ -75,7 +75,7 @@ class TEMLocalizer(torch.nn.Module):
 
 class SimpleTEMDecoder(torch.nn.Module):
 
-    def __init__(self, memory: BidirectionalMemory, localizer: TEMLocalizer, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, dropout: float=0.1):
+    def __init__(self, memory: SpatialMemory, localizer: TEMLocalizer, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, dropout: float=0.1):
         super().__init__()
         self.location_dim = location_dim
         self.sensory_dim = sensory_dim
@@ -131,7 +131,7 @@ class SimpleTEMDecoder(torch.nn.Module):
 
 
 class SimpleTEMEncoder(torch.nn.Module):
-    def __init__(self, memory: BidirectionalMemory, localizer: TEMLocalizer, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_guesses: int, dropout: float=0.1):
+    def __init__(self, memory: SpatialMemory, localizer: TEMLocalizer, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_guesses: int, dropout: float=0.1):
         super().__init__()
         self.location_dim = location_dim
         self.sensory_dim = sensory_dim
@@ -239,7 +239,7 @@ class SimpleTEMModel(torch.nn.Module):
         self.num_guesses = num_guesses
         self.dropout = dropout
 
-        self.memory = BidirectionalMemory(location_dim, sensory_dim, embed_dim, batch_size)
+        self.memory = SpatialMemory(location_dim, sensory_dim, embed_dim, batch_size)
         self.localizer = TEMLocalizer(location_dim, action_dim, embed_dim, dropout)
         
         if is_simple:

@@ -41,7 +41,7 @@ def make_key_grid(embed_dim: int, points_per_dim: int, epsilon: float=1e-6):
     return grid, grid.shape[0]
 
 
-class BidirectionalMemory(torch.nn.Module):
+class SpatialMemory(torch.nn.Module):
     """
     This is a memory cache to store pairs of (key, value) embeddings.
 
@@ -554,9 +554,8 @@ class BidirectionalMemory(torch.nn.Module):
 
         sense, weights = self.read(memory_locations, memory_location_sds, match_threshold=match_threshold, mask_diagonal=True,
                                    return_weights=True)
-        sense_out = self.sensory_proj(sense)
-
-        error = torch.norm(sense_out - memory_sense_out, dim=-1)
+        
+        error = torch.norm(sense - memory_sense_out, dim=-1)
         dependencies = weights > (1 / memory_sense_out.shape[-2])
 
         prune_candidates = self.generate_prune_candidates(error, dependencies, max_error_to_prune)
