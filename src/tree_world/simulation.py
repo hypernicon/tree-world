@@ -2,11 +2,29 @@ import random
 import math
 import sys
 import torch
+import importlib
 from typing import List, Tuple, Optional
 
 from tree_world.embeddings import embed_text_sentence_transformers
 from tree_world.live_viz_matplotlib import LiveVizMPL
 
+
+def load_from_path(path: str):
+    """Load any attribute given a dotted path like 'a.b.c.MyClass'."""
+    if "." in path:
+        parts = path.split('.')
+        module_path = '.'.join(parts[:-1])
+        attr_name = parts[-1]
+
+        module = importlib.import_module(module_path)
+        return getattr(module, attr_name)
+    else:
+        # check if class is already loaded
+        cls = globals().get(path, None)
+        if cls is not None:
+            return cls
+        else:
+            return getattr(sys.modules['__main__'], path)
 
 
 class TreeWorldConfig:
@@ -18,6 +36,9 @@ class TreeWorldConfig:
     rest_cost: int = 1
     eat_distance: float = 10.0
     fruit_health_increase: float = 25.0
+    max_action_norm: float = 5.0
+    grid_size: int = 101
+    grid_extent: float = 1000.0
 
     # Model 
     model_type: str = "AgentModel"
@@ -384,7 +405,9 @@ class Agent:
             from tree_world.agents import PathTracingTEMAgent
             model = PathTracingTEMAgent.from_config(config)
         else:
-            raise ValueError(f"Unknown model type: {config.model_type}")
+            # try to load reflectively from a dot-separated path
+            model_class = load_from_path(config.model_type)
+            model = model_class.from_config(config)
 
         sensor = Sensor.from_config(config)
         agent = cls(model, sensor, config.max_health, config.dim, config.move_cost, config.rest_cost, config.eat_distance, 
@@ -504,6 +527,7 @@ class TreeWorld:
 
             if i % 100 == 0 and i > 0 and hasattr(self.agent.model, "train"):
                 self.agent.model.train()
+                
         return True
 
     def randomize(self):

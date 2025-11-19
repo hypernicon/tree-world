@@ -12,4 +12,4 @@ It is my belief that this basic system can be gradually levered up to generate h
 
 The notebooks below go through this work step by step, setting up the simulation environment, defining the map, showing how to train the map with basic agents, then eventually producing a controller that uses the map for movement and homeostatic drive management.
 
-The next steps after this is to being to look at maps with a one-layer hierarchy. But that is a problem for later.
+The next steps after this is to look at maps with a one-layer hierarchy. But that is a problem for later.

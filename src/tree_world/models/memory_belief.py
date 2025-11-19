@@ -81,6 +81,27 @@ def create_gaussian_belief_map_random(R, gamma, sd=None, num_points_per_axis=Non
 
     return location_beliefs
 
+def create_initial_gaussian_belief(R, gamma, sd=None):
+    """
+    Utility function to create a initial Gaussian belief map centered on the grid.
+    """
+    real_magnitude = real_magnitude_from_gamma(gamma, R)
+
+    if sd is None:
+        sd = 0.1 * real_magnitude
+
+    S = 2 * R + 1
+        
+    grid_points = torch.arange(S)
+    grid = torch.cartesian_prod(grid_points, grid_points).view(S, S, 2)  # (101, 101, 2)
+    grid_locations = map_index_to_space(grid, R, gamma)
+
+    centroid = torch.zeros(1, 1, 2)
+    location_beliefs = torch.exp(-((grid_locations.view(1, -1, 2) - centroid) / sd).pow(2).sum(dim=-1))
+    location_beliefs = location_beliefs / location_beliefs.sum(dim=-1, keepdim=True)
+
+    return location_beliefs.view(1, S, S)
+
 
 class LocationBeliefMemory(torch.nn.Module):
     def __init__(self, location_dim: int, sensory_dim: int, embed_dim: int, batch_size: int=1, max_memory_size: int=-1):
@@ -127,10 +148,9 @@ class LocationBeliefMemory(torch.nn.Module):
 
         assert sensory_data.ndim == self.memory_values.ndim == 3  
         assert self.memory_locations.ndim == location_beliefs.ndim == 4
-        
          
-        self.memory_locations = torch.cat([self.memory_locations, location_beliefs], dim=1),
-        self.memory_locations = torch.cat([self.memory_values, sensory_data], dim=1),
+        self.memory_locations = torch.cat([self.memory_locations, location_beliefs], dim=1)
+        self.memory_values = torch.cat([self.memory_values, sensory_data], dim=1)
         
     def read(
         self,
@@ -215,17 +235,21 @@ class LocationBeliefMemory(torch.nn.Module):
         sharpen: Optional[float]=None, 
         gaussian_blur: Optional[float]=None,
         reference_sharpening: Optional[float]=None,
-    ) -> torch.Tensor:
+    ) -> Optional[torch.Tensor]:
         # memory_locations has shape (N, T, S, S)
         # memory_values has shape (N, T, D)
         # search_key has shape (N, D)
+        if self.memory_locations is None or self.memory_values is None:
+            return None
+
         N, T, S, _ = self.memory_locations.shape
 
         if temperature is None:
             temperature = self.memory_values.shape[-1]**(0.5)
 
         memory_locations = self.memory_locations.view(N, T, S*S)
-        reference_location = reference_location.view(N, S*S, 1)
+        if reference_location is not None:
+            reference_location = reference_location.view(N, S*S, 1)
 
         # compute the alignment scores (N, T)
         s_t = torch.bmm(self.memory_values, search_key[..., None]).squeeze(-1)
