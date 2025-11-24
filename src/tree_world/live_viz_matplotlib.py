@@ -33,6 +33,10 @@ class LiveVizMPL:
         # Keyboard shortcut: press "r" to reset
         self._cid_key = self.fig.canvas.mpl_connect("key_press_event", self._on_key)
 
+        # --- Background memory belief image ---
+        self.mem_bg_im = None
+        self._init_memory_background()
+
         # --- Static trees layer ---
         self.s_poison = None
         self.s_edible = None
@@ -146,13 +150,18 @@ class LiveVizMPL:
         self.agent_outer_circle.center = (px, py)
         self.agent_inner_circle.center = (px, py)
 
+        # --- update memory background, if it exists ---
+        if self.mem_bg_im is not None and hasattr(self.world, "grid_drive_values"):
+            if self.world.grid_drive_values is not None:
+                grid = self.world.grid_drive_values.detach().cpu().numpy()
+                self.mem_bg_im.set_data(grid)
 
         # Trail
         self.trail_x.append(px)
         self.trail_y.append(py)
-        if len(self.trail_x) > self.trail_len:
-            self.trail_x = self.trail_x[-self.trail_len:]
-            self.trail_y = self.trail_y[-self.trail_len:]
+        # if len(self.trail_x) > self.trail_len:
+        #     self.trail_x = self.trail_x[-self.trail_len:]
+        #     self.trail_y = self.trail_y[-self.trail_len:]
         self.trail_line.set_data(self.trail_x, self.trail_y)
 
         # Health
@@ -297,6 +306,9 @@ class LiveVizMPL:
         if new_world is not None:
             self.world = new_world
 
+        # rebuild memory background (in case grid size changed)
+        self._init_memory_background()
+
         # Trees
         if reinit_trees:
             self._init_trees()
@@ -350,6 +362,41 @@ class LiveVizMPL:
             pass
 
     # ---------- internals ----------
+
+    def _init_memory_background(self):
+        """
+        Create or refresh the background image that shows memory's belief about space.
+        """
+        if not hasattr(self.world, "grid_drive_values"):
+            return  
+
+        # Remove previous image if it exists
+        if self.mem_bg_im is not None:
+            try:
+                self.mem_bg_im.remove()
+            except Exception:
+                pass
+
+        # Convert to numpy
+        if self.world.grid_drive_values is not None:
+            grid = self.world.grid_drive_values.detach().cpu().numpy()
+        else:
+            grid = np.zeros((self.world.config.grid_size, self.world.config.grid_size, 3))
+
+        # Compute extent
+        E = self.world.config.grid_extent
+        half = E // 2
+        extent = (-half, half, -half, half)
+
+        # Draw the image behind everything else
+        self.mem_bg_im = self.ax_xy.imshow(
+            grid,
+            extent=extent,
+            origin="lower",
+            interpolation="nearest",
+            alpha=0.4,        # transparent so trees/agent show on top
+            zorder=-10,       # push it to the back
+        )
 
     def _init_trees(self):
         """(Re)build the poisonous/edible scatter artists from self.world."""

@@ -3,6 +3,7 @@ from typing import Tuple, Optional
 from functools import wraps
 
 from tree_world.models.memory import SpatialMemory
+from tree_world.models.tem import TEMModel
 from tree_world.models.actions import ActionEncoder
 from tree_world.models.drives import DriveEmbeddingClassifier
 
@@ -32,10 +33,11 @@ class DriveManager:
         self, 
         location: 'Location', 
         temperature: float=1.0, 
-        sigma_scale: float=1.0, 
+        sigma_scale: float=10.0, 
         num_samples: int=25,
-        location_weight: float=0.01,
-        match_threshold: float=None,
+        location_temperature: float=100.0,
+        match_threshold: float=25,
+        lower_match_threshold: float=25.0,
     ) -> Optional['DriveTarget']:
         hunger_idx = self.drive_keys["edible"]
         hunger_value = self.drive_embedding_model.drive_embeddings.weight[hunger_idx]
@@ -48,27 +50,28 @@ class DriveManager:
             temperature=temperature,
             num_samples=num_samples,
             sigma_scale=sigma_scale,
-            location_weight=location_weight,
-            match_threshold=match_threshold,
+            location_temperature=location_temperature,
+            match_threshold=None, # <-- the location_temperature will eliminate faraway locations
+            lower_match_threshold=lower_match_threshold,
         )
 
-        sensory_expectation = self.memory.read(location_mean, location_sd)  # (batch_size, num_samples, sensory_dim)
+        sensory_expectation = self.memory.read(location_mean, location_sd, match_threshold=match_threshold)  # (batch_size, num_samples, sensory_dim)
         hunger_score = torch.bmm(sensory_expectation, hunger_value[None, :, None]).squeeze(-1)  # (batch_size, num_samples)
         hunger_values, indices = torch.max(hunger_score, dim=-1)
         if hunger_values[0] > 0.0:
             location_indices = indices.unsqueeze(-1).repeat(1, 1, location_mean.shape[-1])
-            location_mean = location_mean.gather(dim=-2, index=location_indices).squeeze(-2)  # (batch_size, sensory_dim)
-            location_sd = location_sd.gather(dim=-2, index=location_indices).squeeze(-2)  # (batch_size, sensory_dim)
+            location_mean = location_mean.gather(dim=-2, index=location_indices).squeeze(-2)  # (batch_size, location_dim)
+            location_sd = location_sd.gather(dim=-2, index=location_indices).squeeze(-2)  # (batch_size, location_dim)
 
             sensory_indices = indices.unsqueeze(-1).repeat(1, 1, sensory_expectation.shape[-1])
             sensory_target = sensory_expectation.gather(dim=-2, index=sensory_indices).squeeze(-2)  # (batch_size, sensory_dim)
 
-            target_location = Location(location_mean, location_sd)
+            target_location = Location(location_mean.squeeze(0), location_sd.squeeze(0))
             drive_target = DriveTarget(
                 hunger_value,
                 sensory_target,
                 location,
-                target_location
+                target_location,
             )
             return drive_target
         else:
@@ -78,7 +81,7 @@ class DriveManager:
         # for now, choose a random location uniformly
         target_location_mean = torch.empty_like(location.location).uniform_(-space_scale, space_scale)
         target_location_sd = torch.ones_like(location.location_sd)
-        target_location = Location(target_location_mean, target_location_sd)
+        target_location = Location(target_location_mean.squeeze(0), target_location_sd.squeeze(0))
 
         target = Target(location, target_location)
         return target
@@ -164,6 +167,10 @@ class Target:
             self.arrival_count = self.arrival_count + 1
 
         return result
+    
+    def get_heading(self) -> torch.Tensor:
+        direction = self.target_location.location - self.current_location.location
+        return direction / torch.norm(direction)
 
 
 class DriveTarget(Target):

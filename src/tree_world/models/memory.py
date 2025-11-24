@@ -689,5 +689,5 @@ class SpatialMemory(torch.nn.Module):
 
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
-        return cls(config.location_dim, config.sensory_embedding_dim, config.embedding_dim, 1, config.max_memory_size)
+        return cls(config.location_dim, config.sensory_embedding_dim, config.embed_dim, 1, config.max_memory_size)
     

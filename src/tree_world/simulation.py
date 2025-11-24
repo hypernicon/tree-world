@@ -6,6 +6,7 @@ import importlib
 from typing import List, Tuple, Optional
 
 from tree_world.embeddings import embed_text_sentence_transformers
+from tree_world.visualize import make_sensory_grid
 from tree_world.live_viz_matplotlib import LiveVizMPL
 
 
@@ -44,13 +45,14 @@ class TreeWorldConfig:
     # Model 
     model_type: str = "AgentModel"
     simple_tem: bool = True
+    max_memory_size: int = 1024
 
     # Sensory inputs
     sensory_embedding_dim: int = 1024
     sensory_embedding_model: str = "BAAI/bge-large-en-v1.5"
     
     location_dim: int = 2
-    embed_dim: int = 32
+    embed_dim: int = 1024
     dropout: float = 0.1
     num_guesses: int = 5
 
@@ -449,6 +451,10 @@ class TreeWorld:
             self.make_name_embeddings()
         )
 
+        self.simple_sensor = SimpleSensor.from_config(config)
+        self.grid_locations, self.grid_sensor_values = make_sensory_grid(config.grid_size, config.grid_extent // 2, self, self.simple_sensor)
+        self.grid_drive_values = None
+
     def get_tree_locations(self):
         return self.tree_locations
 
@@ -506,6 +512,8 @@ class TreeWorld:
         self.agent.reset()
         for tree in self.trees:
             tree.regrow_fruit()
+        
+        self.grid_drive_values = None
     
     def run(self, num_steps: int, record=False, allow_death=True, live_viz=None):
         self.reset()
@@ -528,6 +536,12 @@ class TreeWorld:
 
             if i % 100 == 0 and i > 0 and hasattr(self.agent.model, "train"):
                 self.agent.model.train()
+
+            if i % 10 == 0:
+                if hasattr(self.agent.model, "get_drive_field_from_memory"):
+                    self.grid_drive_values = self.agent.model.get_drive_field_from_memory(self.grid_locations)
+                    # convert to an image, don't forget to transpose the dimensions for height-first indexing
+                    self.grid_drive_values = self.grid_drive_values.view(config.grid_size, config.grid_size, 3).transpose(0, 1)
                 
         return True
 
@@ -607,7 +621,7 @@ if __name__ == "__main__":
         steps = 1000
 
     config = TreeWorldConfig()
-    config.model_type = "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
+    config.model_type = "tree_world.drive_agents.DriveBasedAgentWithMemoryAndLocalMap" # "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
 
     world = TreeWorld.random_from_config(config)
     viz = LiveVizMPL(world)
@@ -619,9 +633,9 @@ if __name__ == "__main__":
         world.randomize()
         viz.reset()
 
-        s = min([steps, (i + 1) * 1000])
+        s = steps # min([steps, (i + 1) * 1000])
         print(f"Running tree world {i} for {s} steps...")
-        world.run(s, record=(i == runs - 1), allow_death=False, live_viz=viz)
+        world.run(s, record=(i == runs - 1), allow_death=True, live_viz=viz)
         print()
         print("Tree world run complete.")
 
@@ -630,10 +644,6 @@ if __name__ == "__main__":
         print(f"Agent poisonous fruit eaten: {world.agent.poisonous_fruit_eaten}")
         print(f"Agent total movement: {world.agent.total_movement}")
         print(f"Agent final location: {torch.norm(world.agent.location).item()}")
-
-        # capture the memory
-        memory = world.agent.model.tem_model.memory
-        torch.save([memory, memory.memory_locations, memory.memory_location_sds, memory.memory_senses], f"memory_example.pt")
 
         # if hasattr(world.agent.model, "train"):
         #     print("Training agent model")
