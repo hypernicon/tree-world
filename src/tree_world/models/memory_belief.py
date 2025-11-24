@@ -3,27 +3,7 @@ import torchvision
 from typing import Optional
 
 
-def map_index_to_space(indices, R, gamma):
-    return gamma * (indices - R)
-
-
-def map_space_to_preindex(x, R, gamma):
-    return x / gamma + R
-
-
-def gamma_from_real_magnitude(real_magnitude, R):
-    """
-       For a location spanning -R to R, the gamma is the distance between each point on the grid,
-       and the real magnitude is the distance between the origin and the edge of the location along an axis.
-    """
-    return real_magnitude / R
-
-def real_magnitude_from_gamma(gamma, R):
-    """
-       For a location spanning -R to R, the gamma is the distance between each point on the grid,
-       and the real magnitude is the distance between the origin and the edge of the location along an axis.
-    """
-    return gamma * R
+from tree_world.models.utils import map_index_to_space, real_magnitude_from_gamma, map_space_to_preindex, gamma_from_real_magnitude
 
 
 def create_gaussion_belief_map_grid(R, gamma, sd=None, num_points_per_axis=None):
@@ -81,6 +61,7 @@ def create_gaussian_belief_map_random(R, gamma, sd=None, num_points_per_axis=Non
 
     return location_beliefs
 
+
 def create_initial_gaussian_belief(R, gamma, sd=None):
     """
     Utility function to create a initial Gaussian belief map centered on the grid.
@@ -112,6 +93,13 @@ class LocationBeliefMemory(torch.nn.Module):
         self.batch_size = batch_size
         self.max_memory_size = max_memory_size
 
+        if embed_dim != sensory_dim:
+            self.sensory_proj = torch.nn.Linear(sensory_dim, embed_dim, bias=False)
+            self.sensory_read_proj = torch.nn.Linear(embed_dim, sensory_dim, bias=False)
+        else:
+            self.sensory_proj = torch.nn.Identity()
+            self.sensory_read_proj = torch.nn.Identity()
+
         self.memory_locations = None
         self.memory_values = None
 
@@ -122,6 +110,11 @@ class LocationBeliefMemory(torch.nn.Module):
     def break_training_graph(self):
         self.memory_locations = self.memory_locations.detach()
         self.memory_values = self.memory_values.detach()
+
+    def memory_size(self):
+        if self.memory_locations is None:
+            return 0
+        return self.memory_locations.shape[1]
 
     def write(
         self,
@@ -138,6 +131,8 @@ class LocationBeliefMemory(torch.nn.Module):
         if location_beliefs.ndim == 3:
             location_beliefs = location_beliefs.unsqueeze(1)
             sensory_data = sensory_data.unsqueeze(1)
+
+        sensory_data = self.sensory_proj(sensory_data)
 
         if self.memory_locations is None or self.memory_values is None:
             assert sensory_data.ndim == 3
@@ -216,6 +211,8 @@ class LocationBeliefMemory(torch.nn.Module):
         # compute the new memory values as (B, Q, D)
         new_memory_values = torch.bmm(attention_weights, self.memory_values)
 
+        new_memory_values = self.sensory_read_proj(new_memory_values)
+
         if single_query:
             return new_memory_values.squeeze(1)
 
@@ -235,6 +232,8 @@ class LocationBeliefMemory(torch.nn.Module):
         sharpen: Optional[float]=None, 
         gaussian_blur: Optional[float]=None,
         reference_sharpening: Optional[float]=None,
+        reference_match_threshold: Optional[float]=None,
+        aggregate: bool=False,
     ) -> Optional[torch.Tensor]:
         # memory_locations has shape (N, T, S, S)
         # memory_values has shape (N, T, D)
@@ -247,6 +246,8 @@ class LocationBeliefMemory(torch.nn.Module):
         if temperature is None:
             temperature = self.memory_values.shape[-1]**(0.5)
 
+        search_key = self.sensory_proj(search_key)
+
         memory_locations = self.memory_locations.view(N, T, S*S)
         if reference_location is not None:
             reference_location = reference_location.view(N, S*S, 1)
@@ -256,18 +257,28 @@ class LocationBeliefMemory(torch.nn.Module):
 
         if reference_location is not None:
             location_affinity = torch.bmm(memory_locations, reference_location).squeeze(-1)
+
+            if reference_match_threshold is not None:
+                invalid_mask = location_affinity < reference_match_threshold
+                location_affinity = location_affinity.masked_fill(invalid_mask, float('-inf'))
+
             location_max = location_affinity.max(dim=-1, keepdim=True).values
-            invalid_mask = location_max < 1e-8
+            invalid_mask = invalid_mask | (location_max < 1e-8)
             location_affinity = location_affinity / location_max
             if reference_sharpening is not None:
                 location_affinity = location_affinity.pow(reference_sharpening)
                 
-            s_t = torch.where(invalid_mask, s_t, s_t * location_affinity)
+            s_t = torch.where(invalid_mask, torch.zeros_like(s_t), s_t * location_affinity)
 
         w_t = torch.softmax(s_t / temperature, dim=-1)
 
         # sample from the mixture, result will be (N, num_samples)
-        t = torch.multinomial(w_t, num_samples=num_samples, replacement=True)
+        t = torch.multinomial(torch.nan_to_num(w_t, nan=0.0), num_samples=num_samples, replacement=True)
+        
+        invalid_ts = None
+        if invalid_mask is not None:
+            invalid_ts = invalid_mask.gather(dim=-1, index=t)
+
         t = t.unsqueeze(-1).repeat(1, 1, S*S)    # (N, num_samples, S^2)
 
         renormalize = False
@@ -291,7 +302,13 @@ class LocationBeliefMemory(torch.nn.Module):
         if renormalize:
             loc = loc / loc.sum(dim=-1, keepdim=True)
 
-        return loc.view(N, -1, S, S)
+        if invalid_ts is not None:
+            loc = torch.where(invalid_ts[..., None], torch.zeros_like(loc), loc)
+
+        if aggregate:
+            return loc.mean(dim=-2).view(N, S, S)
+        else:
+            return loc.view(N, -1, S, S)
 
     def generate_prune_candidates(
         self,

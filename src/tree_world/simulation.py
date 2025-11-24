@@ -24,6 +24,7 @@ def load_from_path(path: str):
         if cls is not None:
             return cls
         else:
+            # Jupyter workaround
             return getattr(sys.modules['__main__'], path)
 
 
@@ -32,11 +33,11 @@ class TreeWorldConfig:
 
     # Agent
     max_health: int = 1000
-    move_cost: int = 2
+    move_cost: float = 0.2
     rest_cost: int = 1
     eat_distance: float = 10.0
     fruit_health_increase: float = 25.0
-    max_action_norm: float = 5.0
+    max_action_norm: float = 10.0
     grid_size: int = 101
     grid_extent: float = 1000.0
 
@@ -317,7 +318,7 @@ class Agent:
 
     It has a sensor that can detect the distance to a tree and the embedding of the tree in a fixed direction.
     """
-    def __init__(self, model: AgentModel, sensor: Sensor, max_health: int, dim: int=2, move_cost: int=2, rest_cost: int=1,
+    def __init__(self, model: AgentModel, sensor: Sensor, max_health: int, dim: int=2, move_cost: float=0.2, rest_cost: int=1,
                  eat_distance: float=1.0, fruit_health_increase: float=10.0):
         self.location = torch.zeros(dim)
         self.heading = torch.randn(dim)
@@ -328,7 +329,7 @@ class Agent:
         self.max_health = max_health
         self.health = max_health
 
-        self.move_cost = move_cost
+        self.move_cost_factor = move_cost
         self.rest_cost = rest_cost
 
         self.max_distance = 100.0
@@ -370,7 +371,7 @@ class Agent:
 
     def move(self, direction: torch.Tensor):
         self.location = self.location + direction
-        self.health = self.health - self.move_cost
+        self.health = self.health - self.move_cost_factor * torch.norm(direction)
         self.total_movement = self.total_movement + torch.norm(direction)
 
     def rest(self):

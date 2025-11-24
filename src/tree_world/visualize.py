@@ -5,9 +5,13 @@ from matplotlib.collections import LineCollection
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 import math
 import torch
-
+import matplotlib.pyplot as plt
+from sklearn.decomposition import PCA
 from matplotlib.font_manager import FontProperties
 import os
+
+from tree_world.models.utils import real_magnitude_from_gamma, map_index_to_space, map_space_to_preindex, gamma_from_real_magnitude
+
 
 def get_emoji_fontprops():
     candidates = [
@@ -224,3 +228,69 @@ def visualize_treeworld_run(
         plt.show()
 
     return fig, ax
+
+
+class RGBProjector:
+    def __init__(self, rgb_model, rgb_min, rgb_max):
+        self.rgb_model = rgb_model
+        self.rgb_min = rgb_min
+        self.rgb_max = rgb_max
+
+    def project(self, values: torch.Tensor):
+        return self.rgb_model.transform(values.cpu().detach().numpy())
+    
+    def __call__(self, values: torch.Tensor):
+        return self.project(values)
+
+    def plot_sensor_field(self, world: 'TreeWorld', values: torch.Tensor, key="Sensor Field"):
+        rgb = self.project(values)
+
+        # normalize the colors to be between 0 and 1 for display
+        rgb = (rgb - self.rgb_min) / (self.rgb_max - self.rgb_min + 1e-8)
+        rgb = np.clip(rgb, 0, 1)
+
+        H = W = int(math.sqrt(values.shape[0]))
+        img = rgb.reshape(H, W, 3)
+
+        fig, ax = plt.subplots(figsize=(6,6))
+        ax.imshow(
+            img,
+            extent=[-500, 500, -500, 500],  # [xmin, xmax, ymin, ymax]
+            origin='lower',
+            interpolation='nearest',
+            aspect='equal',  # square pixels in world space
+        )
+        ax.set_title(f"{key} (PCA colors)")
+        ax.axis("off")
+
+        for tree in world.trees:
+            x, y = tree.location.cpu().numpy()
+            color = "red" if tree.is_poisonous else "green"
+            ax.scatter(
+                y, x,
+                c=color, marker="x" if tree.is_poisonous else "o",
+                s=80, edgecolor="k"
+            )
+
+        return img, fig, ax
+
+    @classmethod
+    def make_rgb_model_from_sensor_values(cls, values: torch.Tensor):
+        sensor_np = values.cpu().numpy()
+
+        N = sensor_np.shape[0]
+        k = min(4000, N)                    # tune subset size
+        idx = np.random.RandomState(42).choice(N, size=k, replace=False)    
+
+        pca = PCA(n_components=3)
+        rgb = pca.fit_transform(sensor_np[idx])
+        return cls(pca, rgb.min(axis=0), rgb.max(axis=0))
+
+
+def make_sensory_grid(num_points_per_axis: int, real_magnitude: float, world: 'TreeWorld', sensor: 'Sensor'):
+    points = torch.linspace(-real_magnitude, real_magnitude, num_points_per_axis)
+    grid = torch.cartesian_prod(points, points)
+
+    _, sensor_values, _ = sensor.sense(world, grid, None)
+    return grid, sensor_values
+

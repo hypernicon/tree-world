@@ -1,8 +1,8 @@
 import torch
-from typing import Tuple
+from typing import Tuple, Optional
 from functools import wraps
 
-from tree_world.models.tem import TEMModel
+from tree_world.models.memory import SpatialMemory
 from tree_world.models.actions import ActionEncoder
 from tree_world.models.drives import DriveEmbeddingClassifier
 
@@ -23,32 +23,82 @@ def _monitor(fn):
 
 
 class DriveManager:
-    def __init__(self, drive_embedding_model: DriveEmbeddingClassifier, drive_keys: dict, tem_model: TEMModel):
+    def __init__(self, drive_embedding_model: DriveEmbeddingClassifier, drive_keys: dict, memory: SpatialMemory):
         self.drive_embedding_model = drive_embedding_model
         self.drive_keys = drive_keys
-        self.tem_model = tem_model
+        self.memory = memory
     
-    def choose_hunger_target(self, location: 'Location', tem_model: TEMModel) -> 'Location':
+    def choose_hunger_target(
+        self, 
+        location: 'Location', 
+        temperature: float=1.0, 
+        sigma_scale: float=1.0, 
+        num_samples: int=25,
+        location_weight: float=0.01,
+        match_threshold: float=None,
+    ) -> Optional['DriveTarget']:
         hunger_idx = self.drive_keys["edible"]
         hunger_value = self.drive_embedding_model.drive_embeddings.weight[hunger_idx]
 
-        top_locations, top_location_sds, top_senses, _, num_found = self.tem_model.memory.search(hunger_value[None, :], num_results=5)
-        if num_found[0] > 0:
-            # print(f"Selected target location to satisfy hunger")
-            target_location = Location(top_locations[0,:1].detach(), top_location_sds[0,:1].detach())
-            target = DriveTarget(hunger_value.detach(), top_senses[0,:1].detach(), location, target_location)
-            return target
+        location_mean, location_sd = self.memory.sample(
+            location.location[None, :], 
+            location.location_sd[None, :], 
+            hunger_value[None, :], 
+            return_distribution=True,
+            temperature=temperature,
+            num_samples=num_samples,
+            sigma_scale=sigma_scale,
+            location_weight=location_weight,
+            match_threshold=match_threshold,
+        )
+
+        sensory_expectation = self.memory.read(location_mean, location_sd)  # (batch_size, num_samples, sensory_dim)
+        hunger_score = torch.bmm(sensory_expectation, hunger_value[None, :, None]).squeeze(-1)  # (batch_size, num_samples)
+        hunger_values, indices = torch.max(hunger_score, dim=-1)
+        if hunger_values[0] > 0.0:
+            location_indices = indices.unsqueeze(-1).repeat(1, 1, location_mean.shape[-1])
+            location_mean = location_mean.gather(dim=-2, index=location_indices).squeeze(-2)  # (batch_size, sensory_dim)
+            location_sd = location_sd.gather(dim=-2, index=location_indices).squeeze(-2)  # (batch_size, sensory_dim)
+
+            sensory_indices = indices.unsqueeze(-1).repeat(1, 1, sensory_expectation.shape[-1])
+            sensory_target = sensory_expectation.gather(dim=-2, index=sensory_indices).squeeze(-2)  # (batch_size, sensory_dim)
+
+            target_location = Location(location_mean, location_sd)
+            drive_target = DriveTarget(
+                hunger_value,
+                sensory_target,
+                location,
+                target_location
+            )
+            return drive_target
         else:
             return None
 
+    def choose_curiosity_target(self, location: 'Location', space_scale: float) -> Optional['DriveTarget']:
+        # for now, choose a random location uniformly
+        target_location_mean = torch.empty_like(location.location).uniform_(-space_scale, space_scale)
+        target_location_sd = torch.ones_like(location.location_sd)
+        target_location = Location(target_location_mean, target_location_sd)
+
+        target = Target(location, target_location)
+        return target
+
     def assess_valence(self, sensory: torch.Tensor) -> float:
-        drive_targets = self.drive_embedding_model(sensory.clone()[None, :])[0]
-        if drive_targets[self.drive_keys["poison"]] > 0.1:
-            return -1.0
-        elif drive_targets[self.drive_keys["edible"]] > 0.1:
-            return 1.0
+        squeeze = False
+        if sensory.ndim < 2:
+            sensory = sensory[None, :]
+            squeeze = True
+        drive_targets = self.drive_embedding_model(sensory.detach())
+
+        output = (
+            drive_targets[:, self.drive_keys["edible"]] -
+            drive_targets[:, self.drive_keys["poison"]]
+        )
+
+        if squeeze:
+            return output[0].item()
         else:
-            return 0.0
+            return output
 
 
 class Location:

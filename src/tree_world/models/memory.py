@@ -113,7 +113,9 @@ class SpatialMemory(torch.nn.Module):
             return result
 
     def get_location_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, 
-                              match_threshold: float=None, mask_diagonal: bool=False, raw_weights: bool=False, 
+                              match_threshold: float=None, 
+                              lower_match_threshold: float=None,
+                              mask_diagonal: bool=False, raw_weights: bool=False, 
                               detach_locations: bool=True):
         """
         Get the affinity of a location to the memory locations.
@@ -143,11 +145,15 @@ class SpatialMemory(torch.nn.Module):
         log_location_affinity = (
             - 0.5 * (location_delta.pow(2) / (location_delta_var + 1e-8)).pow(2).sum(dim=-1) 
             - 0.5 * math.log(2 * math.pi) * location_delta_var.shape[-1]
-            - torch.log(location_delta_var).sum(dim=-1)
+            - 0.5 * torch.log(location_delta_var).sum(dim=-1)
         )
 
         if match_threshold is not None:
             threshold_check = torch.norm(location_delta, dim=-1) > match_threshold
+            log_location_affinity = log_location_affinity.masked_fill(threshold_check, float('-inf'))
+
+        elif lower_match_threshold is not None:
+            threshold_check = torch.norm(location_delta, dim=-1) < lower_match_threshold
             log_location_affinity = log_location_affinity.masked_fill(threshold_check, float('-inf'))
 
         if mask_diagonal:
@@ -170,11 +176,15 @@ class SpatialMemory(torch.nn.Module):
         return location_weights
     
     def get_location_and_sensory_affinity(self, location: torch.Tensor, location_sd: torch.Tensor, sensory: torch.Tensor,
-                                          detach_senses: bool=True, detach_locations: bool=True):
+                                          detach_senses: bool=True, detach_locations: bool=True, 
+                                          match_threshold: float=None, lower_match_threshold: float=None):
         """
         Get the affinity of a location and sensory to the memory locations and senses.
         """
-        location_affinity = self.get_location_affinity(location, location_sd, raw_weights=True, detach_locations=detach_locations)
+        location_affinity = self.get_location_affinity(
+            location, location_sd, raw_weights=True, detach_locations=detach_locations, 
+            match_threshold=match_threshold, lower_match_threshold=lower_match_threshold
+        )
         memory_senses = self.memory_senses
         if detach_senses:
             memory_senses = memory_senses.detach()
@@ -258,8 +268,10 @@ class SpatialMemory(torch.nn.Module):
         return location_out, location_sd_out, sensory_out
 
     def sample(self, location: torch.Tensor, location_sd: torch.Tensor, search_key: torch.Tensor, 
-               num_samples: int=1, temperature: float=1.0, sigma_scale: float=25.0,
-               detach_locations: bool=True, detach_senses: bool=True):
+               num_samples: int=1, temperature: float=1.0, sigma_scale: float=1.0, match_threshold: float=None,
+               lower_match_threshold: float=None,
+               location_temperature: float=1.0,
+               detach_locations: bool=True, detach_senses: bool=True, return_distribution: bool=False):
         """
         Sample from the memory cache using a Gaussian mixture model.
 
@@ -270,15 +282,29 @@ class SpatialMemory(torch.nn.Module):
         :param temperature: The temperature of the softmax.
         :return: The sampled locations, the sampled senses, and the sampled weights.
         """
+        squeeze = search_key.ndim < 3
+
         if self.memory_locations is None:
-            return torch.zeros(self.batch_size, num_samples, self.location_dim, device=location.device, dtype=location.dtype)
+            num_queries = search_key.shape[1] if not squeeze else 1
+            default_result = torch.zeros(
+                self.batch_size, num_queries, num_samples, self.location_dim, device=location.device, dtype=location.dtype
+            )
+            if squeeze:
+                default_result = default_result.squeeze(1)
+            if return_distribution:
+                return default_result, torch.ones_like(default_result)
+            else:
+                return default_result
 
         search_key = self.sensory_proj(search_key)
         
         if location is None:
             affinity = self.score(search_key, self.memory_senses, factor=self.sensory_factor)
+            affinity = affinity / temperature
 
         else:
+            assert location.ndim == search_key.ndim
+            
             if location.ndim < 3:
                 location = location[..., None, :]
                 location_sd = location_sd[..., None, :]
@@ -287,11 +313,16 @@ class SpatialMemory(torch.nn.Module):
                 search_key = search_key[..., None, :]
 
             location_affinity, sensory_affinity = self.get_location_and_sensory_affinity(
-                location, location_sd, search_key, detach_senses=detach_senses, detach_locations=detach_locations
+                location, location_sd, search_key, 
+                detach_senses=detach_senses, detach_locations=detach_locations, 
+                match_threshold=match_threshold, lower_match_threshold=lower_match_threshold
             )
-            affinity = location_affinity * sensory_affinity
-        
-        scores = torch.softmax(temperature * affinity, dim=-1)
+            affinity = location_affinity / location_temperature + sensory_affinity / temperature
+
+            invalid_mask = (affinity <= float('-inf')).all(dim=-1)  # (batch_size, num_queries)
+            affinity = torch.where(invalid_mask, sensory_affinity, affinity)
+
+        scores = torch.softmax(affinity, dim=-1)
 
         shape = tuple(list(scores.shape[:-1]) + [num_samples,])
         t = torch.multinomial(scores.view(-1, scores.shape[-1]), num_samples=num_samples, replacement=True)
@@ -300,7 +331,14 @@ class SpatialMemory(torch.nn.Module):
         loc_mean = self.memory_locations.gather(dim=-2, index=t).view(self.batch_size, -1, num_samples, self.location_dim)
         loc_sd = self.memory_location_sds.gather(dim=-2, index=t).view(self.batch_size, -1, num_samples, self.location_dim)
 
-        return loc_mean + torch.randn_like(loc_mean) * sigma_scale * loc_sd
+        if squeeze:
+            loc_mean = loc_mean.squeeze(-3)
+            loc_sd = loc_sd.squeeze(-3)
+
+        if return_distribution:
+            return loc_mean, loc_sd
+        else:
+            return loc_mean + torch.randn_like(loc_mean) * sigma_scale * loc_sd
 
 
     def search(self, senses: torch.Tensor, num_results: int=1, threshold: float=0.0, diversity_steps: int=5,
@@ -648,4 +686,8 @@ class SpatialMemory(torch.nn.Module):
 
         sensory_loss = torch.linalg.norm(sensory_mat - torch.eye(self.sensory_dim, device=sensory_mat.device))
         return loss + sensory_loss
+
+    @classmethod
+    def from_config(cls, config: 'TreeWorldConfig'):
+        return cls(config.location_dim, config.sensory_embedding_dim, config.embedding_dim, 1, config.max_memory_size)
     
