@@ -293,7 +293,7 @@ class AgentModel:
         return orthogonal_direction
 
     def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
-                   agent_location: torch.Tensor=None, obj_location: torch.Tensor=None):
+                   agent_location: torch.Tensor=None, obj_location: torch.Tensor=None, reward: float=0.0):
         if distance is None:
             # pick an orthogonal direction to the heading
             orthogonal_direction = self.get_orthogonal_direction(heading)
@@ -353,18 +353,28 @@ class Agent:
     def step(self, world: 'TreeWorld'):
         distance, embedding, tree = self.sensor.sense(world, self.location, self.heading)
 
+        reward = 0.0
         if tree is not None and distance < self.eat_distance:
             # print(f"Eating fruit from tree {tree.name} with fruit amount {num_fruit}")
             self.fruit_eaten += 1
+            reward = 1.0
             if tree.is_poisonous:
                 self.poisonous_fruit_eaten += 1
+                reward = -1.0
 
             # NOTE: this requires the agent to face the tree when eating fruit
             self.eat_fruit(1, tree.is_poisonous)
             tree.harvest_fruit()
         
-        position_delta, self.heading = self.model.get_action(distance, embedding, self.heading, self.health / self.max_health,
-                                                             self.location, tree.location if tree is not None else None)
+        position_delta, self.heading = self.model.get_action(
+            distance, 
+            embedding, 
+            self.heading, 
+            self.health / self.max_health,
+            agent_location=self.location, 
+            obj_location=tree.location if tree is not None else None, 
+            reward=reward
+        )
 
         if position_delta is None or torch.norm(position_delta) < 1e-8:
             self.rest()
@@ -455,6 +465,8 @@ class TreeWorld:
         self.grid_locations, self.grid_sensor_values = make_sensory_grid(config.grid_size, config.grid_extent // 2, self, self.simple_sensor)
         self.grid_drive_values = None
 
+        self.needs_reset = False
+
     def get_tree_locations(self):
         return self.tree_locations
 
@@ -516,7 +528,10 @@ class TreeWorld:
         self.grid_drive_values = None
     
     def run(self, num_steps: int, record=False, allow_death=True, live_viz=None):
-        self.reset()
+        if self.needs_reset:
+            self.reset()
+        
+        self.needs_reset = True
         if record:
             self.record_positions = [self.agent.location.numpy().tolist()]
             self.record_healths = [self.agent.health]
@@ -541,7 +556,7 @@ class TreeWorld:
                 if hasattr(self.agent.model, "get_drive_field_from_memory"):
                     self.grid_drive_values = self.agent.model.get_drive_field_from_memory(self.grid_locations)
                     # convert to an image, don't forget to transpose the dimensions for height-first indexing
-                    self.grid_drive_values = self.grid_drive_values.view(config.grid_size, config.grid_size, 3).transpose(0, 1)
+                    self.grid_drive_values = self.grid_drive_values.view(self.config.grid_size, self.config.grid_size, 3).transpose(0, 1)
                 
         return True
 
@@ -580,6 +595,7 @@ class TreeWorld:
         )
 
         self.reset()
+        self.needs_reset = False
 
         dists = torch.cdist(tree_embeddings, tree_embeddings)
 
@@ -621,7 +637,7 @@ if __name__ == "__main__":
         steps = 1000
 
     config = TreeWorldConfig()
-    config.model_type = "tree_world.drive_agents.DriveBasedAgentWithMemoryAndLocalMap" # "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
+    config.model_type = "tree_world.drive_agents.DriveBasedAgentWithLocalPolicy" # "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
 
     world = TreeWorld.random_from_config(config)
     viz = LiveVizMPL(world)
@@ -633,7 +649,7 @@ if __name__ == "__main__":
         world.randomize()
         viz.reset()
 
-        s = steps # min([steps, (i + 1) * 1000])
+        s = min([steps, (i + 1) * 1000])
         print(f"Running tree world {i} for {s} steps...")
         world.run(s, record=(i == runs - 1), allow_death=True, live_viz=viz)
         print()

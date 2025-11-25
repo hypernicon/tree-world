@@ -38,13 +38,14 @@ class DriveManager:
         location_temperature: float=100.0,
         match_threshold: float=25,
         lower_match_threshold: float=25.0,
+        use_location: bool=True,
     ) -> Optional['DriveTarget']:
         hunger_idx = self.drive_keys["edible"]
         hunger_value = self.drive_embedding_model.drive_embeddings.weight[hunger_idx]
 
         location_mean, location_sd = self.memory.sample(
-            location.location[None, :], 
-            location.location_sd[None, :], 
+            location.location[None, :] if use_location else None, 
+            location.location_sd[None, :] if use_location else None, 
             hunger_value[None, :], 
             return_distribution=True,
             temperature=temperature,
@@ -86,12 +87,17 @@ class DriveManager:
         target = Target(location, target_location)
         return target
 
-    def assess_valence(self, sensory: torch.Tensor) -> float:
+    def assess_valence(self, sensory: torch.Tensor, return_raw_drives: bool=False) -> float:
         squeeze = False
         if sensory.ndim < 2:
             sensory = sensory[None, :]
             squeeze = True
         drive_targets = self.drive_embedding_model(sensory.detach())
+        if return_raw_drives:
+            if squeeze:
+                return drive_targets[0]
+            else:
+                return drive_targets
 
         output = (
             drive_targets[:, self.drive_keys["edible"]] -

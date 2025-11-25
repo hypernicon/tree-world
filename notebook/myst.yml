@@ -21,6 +21,8 @@ site:
     logo: _static/ajl_logo.png
     toc:
       - file: intro.md
+      - file: rl-local-map.ipynb
+      - file: drive-based-controller.ipynb
       - file: localizing-with-tem.ipynb
       - file: belief-maps.ipynb
       - file: map_testing.ipynb
