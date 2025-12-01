@@ -1,4 +1,5 @@
 import torch
+import random
 
 from tree_world.models.utils import TorchBlocker
 from tree_world.models.memory import SpatialMemory
@@ -34,7 +35,18 @@ class DriveEmbeddingClassifier(torch.nn.Module):
         return y
 
 
-def train_drive_classifier(config: "TreeWorldConfig", with_ids: bool=False):
+class DriveEmbeddingClassifierNonExclusive(torch.nn.Module):
+    def __init__(self, input_dim: int, num_drives: int):
+        super().__init__()
+        self.input_dim = input_dim
+        self.drive_embeddings = torch.nn.Embedding(num_drives, input_dim)
+    
+    def forward(self, x: torch.Tensor):
+        y = torch.matmul(x, self.drive_embeddings.weight.transpose(0, 1))
+        return torch.sigmoid(y)
+
+
+def train_drive_classifier(config: "TreeWorldConfig", with_ids: bool=False, nonexclusive: bool=False):
     from tree_world.embeddings import embed_text_sentence_transformers
 
     num_drives = 3
@@ -62,14 +74,32 @@ def train_drive_classifier(config: "TreeWorldConfig", with_ids: bool=False):
         state_embedding = state_embeddings[i]
         for j,fruit in enumerate(config.poison_fruits):
             new_embedding = state_embedding + tree_embeddings[j]
-            new_target = [state_values[i], 0, 1 - state_values[i]]
+            new_target = [state_values[i], 0, 0 if nonexclusive else 1 - state_values[i]]
             new_targets.append(new_target)
             new_embeddings.append(new_embedding)
         
         base = len(config.poison_fruits)
         for j,fruit in enumerate(config.edible_fruits):
             new_embedding = state_embedding + tree_embeddings[base + j]
-            new_target = [0, state_values[i], 1 - state_values[i]]
+            new_target = [0, state_values[i], 0 if nonexclusive else 1 - state_values[i]]
+            new_targets.append(new_target)
+            new_embeddings.append(new_embedding)
+
+    if nonexclusive:
+        # add some mixed examples
+        num_mixed = 1000
+        for i in range(num_mixed):
+            fruit = random.choice(config.edible_fruits)
+            poison = random.choice(config.poison_fruits)
+
+            fruit_index = len(config.poison_fruits) + config.edible_fruits.index(fruit)
+            poison_index = config.poison_fruits.index(poison)
+
+            fruit_weight = random.random() * 0.2 + 0.8
+            poison_weight = random.random() * 0.2 + 0.8
+
+            new_embedding = fruit_weight * tree_embeddings[fruit_index] + poison_weight * tree_embeddings[poison_index]
+            new_target = [poison_weight, fruit_weight, 0]
             new_targets.append(new_target)
             new_embeddings.append(new_embedding)
     
@@ -77,8 +107,17 @@ def train_drive_classifier(config: "TreeWorldConfig", with_ids: bool=False):
     new_targets = torch.tensor(new_targets)
 
     num_drives = 3
-    model = DriveEmbeddingClassifier(input_dim, num_drives)
+    if nonexclusive:
+        model = DriveEmbeddingClassifierNonExclusive(input_dim, num_drives)
+    else:
+        model = DriveEmbeddingClassifier(input_dim, num_drives)
     optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    weights = new_targets.sum(dim=-1)
+    weights = weights / weights.sum()
+    inverse_weights = 1 / weights / weights.shape[0]
+    inverse_weights[0] *= 3.0  # triple the weight of the poison to avoid negative consequences
+    inverse_weights = inverse_weights / inverse_weights.sum()
 
     for i in range(1000):
         optimizer.zero_grad()
@@ -87,7 +126,13 @@ def train_drive_classifier(config: "TreeWorldConfig", with_ids: bool=False):
         else:
             outputs = model(new_embeddings)
         # literal cross entropy loss between outputs and new_targets = -sum(new_targets * log(outputs))
-        loss = -torch.sum(new_targets * torch.log(outputs), dim=1).mean()
+        if nonexclusive:
+            loss = (
+                - torch.sum(new_targets * torch.log(outputs), dim=1).mean()
+                - torch.sum((1-new_targets) * torch.log(1-outputs), dim=1).mean()
+            )
+        else:
+            loss = -torch.sum(new_targets * torch.log(outputs) * inverse_weights[:, None], dim=1).mean()
         loss.backward()
         optimizer.step()
 

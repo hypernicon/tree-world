@@ -95,7 +95,7 @@ class DriveBasedAgentWithMemory(AgentModel):
     def adjust_heading(self, heading: torch.Tensor, agent_location: Location):
         return heading
 
-    def update_rewards(self, reward: float):
+    def update_rewards(self, reward: float, agent_location: Location=None):
         pass
 
     def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
@@ -103,7 +103,7 @@ class DriveBasedAgentWithMemory(AgentModel):
         assert agent_location is not None, "DriveBasedAgent requires perfect localization"
         agent_location = Location(agent_location, torch.ones_like(agent_location) * 5.0)
 
-        self.update_rewards(reward)
+        self.update_rewards(reward, agent_location)
 
         was_hungry = self.is_hungry
         self.is_hungry = health <= self.hunger_threshold
@@ -314,7 +314,7 @@ class DriveBasedAgentWithLocalPolicy(DriveBasedAgentWithMemory):
         else:
             print(f"Using baseline model")
     
-    def update_rewards(self, reward: float):
+    def update_rewards(self, reward: float, agent_location: Location=None):
         self.total_rewards += reward
 
     def heading_from_policy(self, heading: torch.Tensor, agent_location: Location, output: Optional[torch.Tensor]=None):

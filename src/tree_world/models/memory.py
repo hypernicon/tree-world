@@ -77,6 +77,11 @@ class SpatialMemory(torch.nn.Module):
         self.sensory_factor = sensory_dim ** -0.5
         self.location_factor = location_dim ** -0.5
 
+    def memory_size(self):
+        if self.memory_locations is None:
+            return 0
+        return self.memory_locations.shape[1]
+
     def reset(self):
         self.memory_locations = None
         self.memory_senses = None

@@ -10,6 +10,15 @@ project:
       provider: github
       repo: https://github.com/hypernicon/tree-world
       ref: HEAD
+  toc:
+    - file: intro.md
+    - file: simulation-dev.ipynb
+    - file: map_testing.ipynb
+    - file: belief-maps.ipynb
+    - file: localizing-with-tem.ipynb
+    - file: drive-based-controller.ipynb
+    - file: rl-local-map.ipynb
+    - file: improving-sensory-perception.ipynb
 
 site:
   template: book-theme
@@ -19,11 +28,3 @@ site:
     style: _static/custom.css
     favicon: _static/ajl_icon.png
     logo: _static/ajl_logo.png
-    toc:
-      - file: intro.md
-      - file: rl-local-map.ipynb
-      - file: drive-based-controller.ipynb
-      - file: localizing-with-tem.ipynb
-      - file: belief-maps.ipynb
-      - file: map_testing.ipynb
-      - file: simulation-dev.ipynb

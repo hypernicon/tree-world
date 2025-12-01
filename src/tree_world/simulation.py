@@ -50,6 +50,7 @@ class TreeWorldConfig:
     # Sensory inputs
     sensory_embedding_dim: int = 1024
     sensory_embedding_model: str = "BAAI/bge-large-en-v1.5"
+    sensor_attenuation: float = 1e-2
     
     location_dim: int = 2
     embed_dim: int = 1024
@@ -173,6 +174,8 @@ class SimpleSensor(Sensor):
 
     This is a diffusion model; it models the tree locations as a Gaussian distribution, and the sensor is a Gaussian kernel.
     """
+    def __init__(self, a: float=0.0001):
+        self.a = a
 
     def sense(self, world: 'TreeWorld', position: torch.Tensor, heading: torch.Tensor):
         tree_locations = world.get_tree_locations()
@@ -189,8 +192,7 @@ class SimpleSensor(Sensor):
         # Now, u(0, t) = c t^{d/2}, and we want u(0, t) = 1 and u(config.max_sense_distance, t) = a = small number.
         # This reduces to u(x, t) = \exp(-1/(2t) \|x\|^2) with \exp(-r^2 / 2t) = a ==> t = -r^2 / 2 \log(a).
         # for r = config.max_sense_distance
-        a = 0.1
-        virtual_time = world.config.max_sense_distance**2 / 2 / math.log(1/a)
+        virtual_time = world.config.max_sense_distance**2 / 2 / math.log(1/self.a)
         distances = torch.norm(tree_locations[:, None] - position[None, :], dim=-1)
         kernel = torch.exp(-0.5 * (distances).pow(2) / virtual_time)  # shape (num_trees, num_positions)
 
@@ -212,7 +214,7 @@ class SimpleSensor(Sensor):
 
     @classmethod
     def from_config(cls, config: TreeWorldConfig):
-        return cls()
+        return cls(a=config.sensor_attenuation)
 
 
 class DirectionalSensor(Sensor):
