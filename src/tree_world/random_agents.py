@@ -21,13 +21,17 @@ class Pruner(torch.nn.Module):
 
     def forward(self, locations, sensory):
         assert self.location_prefix.shape[1] == locations.shape[1]
-        sensory_out = self.localizer[0].sensory_predictor(locations, self.location_prefix, self.sensory_prefix)
         sensory_with_location = self.make_sensory_keys(locations, sensory)
         sensory_key_prefix = self.make_sensory_keys(self.location_prefix, self.sensory_prefix)
-        location_out = self.localizer[0].location_refiner(sensory_with_location, sensory_key_prefix, self.location_prefix)
 
-        sensory_error = (sensory - sensory_out).pow(2).sum(dim=-1).mean()
-        location_error = (locations - location_out).pow(2).sum(dim=-1).mean()
+        sensory_out_1 = self.localizer[0].sensory_predictor(locations, self.location_prefix, self.sensory_prefix, add_residual=False)
+        location_out_1 = self.localizer[0].location_refiner(sensory_with_location, sensory_key_prefix, self.location_prefix)
+
+        sensory_out_2 = self.localizer[0].sensory_predictor(locations, locations, sensory, allow_self_attention=False, add_residual=False)
+        location_out_2 = self.localizer[0].location_refiner(sensory_with_location, sensory_with_location, locations, allow_self_attention=False)
+
+        sensory_error = (sensory_out_1 - sensory_out_2).pow(2).sum(dim=-1).mean()
+        location_error = (location_out_1 - location_out_2).pow(2).sum(dim=-1).mean()
         
         return sensory_error + location_error
 
@@ -177,7 +181,7 @@ class RandomTemTAgent(AgentModel):
         if self.use_cuda:
             torch.cuda.empty_cache()
     
-    def prune(self, steps=1000):
+    def prune(self, steps=10000):
         pruner = Pruner(self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
         opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
 
