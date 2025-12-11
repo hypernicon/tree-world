@@ -9,12 +9,12 @@ from tree_world.models.tem_t import TemLocalizer, TemTransformerLayer
 
 
 class Pruner(torch.nn.Module):
-    def __init__(self, localizer, num_slots, location_dim, sensory_dim):
+    def __init__(self, locations, sensory, localizer, num_slots, location_dim, sensory_dim):
         super().__init__()
         self.localizer = [localizer] # Hide it from the graph
 
-        self.location_prefix = torch.nn.Parameter(torch.empty(1, num_slots, location_dim).uniform_(-1, 1))
-        self.sensory_prefix = torch.nn.Parameter(torch.randn(1, num_slots, sensory_dim))
+        self.location_prefix = torch.nn.Parameter(locations.clone())
+        self.sensory_prefix = torch.nn.Parameter(sensory.clone())
 
     def make_sensory_keys(self, locations, sensory):
         return sensory + self.localizer[0].position_encoder(locations)
@@ -182,13 +182,6 @@ class RandomTemTAgent(AgentModel):
             torch.cuda.empty_cache()
     
     def prune(self, steps=10000):
-        pruner = Pruner(self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
-        opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
-
-        pruner.to(self.last_location.device).to(self.last_location.dtype)
-
-        assert len([p for p in pruner.parameters()]) == 2
-
         T = self.last_location.shape[1]
 
         if self.location_prefix is not None:
@@ -200,6 +193,16 @@ class RandomTemTAgent(AgentModel):
             training_sensory = torch.cat([self.last_sensory[0][:-1], self.sensory_prefix[0]], dim=0)
         else:
             training_sensory = self.last_sensory[0][:-1]
+        
+        indices = torch.randperm(T-1, device=self.last_location.device)[:self.context_window]
+        locations = training_locations[indices]
+        sensory = training_sensory[indices]
+        pruner = Pruner(locations, sensory, self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
+        opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
+
+        pruner.to(self.last_location.device).to(self.last_location.dtype)
+
+        assert len([p for p in pruner.parameters()]) == 2
 
         for i in range(steps):
             indices = torch.randperm(T-1, device=self.last_location.device)[:self.context_window]
