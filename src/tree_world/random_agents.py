@@ -217,7 +217,7 @@ class RandomTemTAgent(AgentModel):
         self.sensory_key_prefix = pruner.make_sensory_keys(self.location_prefix, self.sensory_prefix)
 
         self.last_location = self.last_location[:, -1:]
-        self.last_sensory = self.sensory[:, -1:]
+        self.last_sensory = self.last_sensory[:, -1:]
         self.last_action = self.last_action[-1:]
     
     @classmethod
