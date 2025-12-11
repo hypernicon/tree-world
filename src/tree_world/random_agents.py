@@ -15,12 +15,15 @@ class Pruner(torch.nn.Module):
 
         self.location_prefix = torch.nn.Parameter(torch.empty(1, num_slots, location_dim).uniform_(-1, 1))
         self.sensory_prefix = torch.nn.Parameter(torch.randn(1, num_slots, sensory_dim))
-        self.sensory_key_prefix = torch.nn.Parameter(torch.randn(1, num_slots, sensory_dim))
+
+    def make_sensory_keys(self, locations, sensory)
+        return sensory + self.localizer[0].position_encoder(locations)
 
     def forward(self, locations, sensory):
         assert self.location_prefix.shape[1] == locations.shape[1]
         sensory_out = self.localizer[0].sensory_predictor(locations, self.location_prefix, self.sensory_prefix)
-        sensory_with_location = sensory + self.localizer[0].position_encoder(locations)
+        sensory_with_location = self.make_sensory_keys(locations, sensory)
+        sensory_key_prefix = self.make_sensory_keys(self.location_prefix, self.sensory_prefix)
         location_out = self.localizer[0].location_refiner(sensory_with_location, self.sensory_key_prefix, self.sensory)
 
         sensory_error = (sensory - sensory_out).pow(2).sum(dim=-1).mean()
@@ -168,7 +171,7 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
 
-        if self.last_location.shape[1] > self.context_window:
+        if self.last_location.shape[1] > self.context_window + 1:
             self.prune()
 
         if self.use_cuda:
@@ -178,17 +181,23 @@ class RandomTemTAgent(AgentModel):
         pruner = Pruner(self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
         opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
 
-        assert len([p for p in pruner.parameters()]) == 3
+        assert len([p for p in pruner.parameters()]) == 2
 
         T = self.last_location.shape[1]
 
+        if self.location_prefix is not None:
+            training_locations = torch.cat([self.last_location[0][:-1], self.location_prefix[0]], dim=0)
+        
+        if self.sensory_prefix is not None:
+            training_sensory = torch.cat([self.last_sensory[0][:-1], self.sensory_prefix[0]], dim=0)
+
         for i in range(steps):
-            indices = torch.randperm(T-1, device=self.last_location.device)[:self.context_window]
-            locations = self.last_location[0][indices]
-            sensory = self.last_sensory[0][indices]
+            indices = torch.randperm(T-1, device=self.last_location.device)[:(T-1)]
+            locations = training_locations[indices]
+            sensory = training_sensory[indices]
 
             opt.zero_grad()
-            loss = pruner(locations, sensory)
+            loss = pruner(locations[None,...], sensory[None,...])
             loss.backward()
             opt.step()
 
@@ -199,7 +208,7 @@ class RandomTemTAgent(AgentModel):
         print(f"PRUNED: final loss {loss.item()}")
         self.location_prefix = pruner.location_prefix.data.detach().clone()
         self.sensory_prefix = pruner.sensory_prefix.data.detach().clone()
-        self.sensory_key_prefix = pruner.sensory_key_prefix.data.detach().clone()
+        self.sensory_key_prefix = pruner.make_sensory_keys(self.location_prefix, self.sensory_prefix)
 
         self.last_location = self.last_location[:, -1:]
         self.last_sensory = self.sensory[:, -1:]
