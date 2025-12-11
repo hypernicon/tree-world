@@ -196,7 +196,7 @@ class RandomTemTAgent(AgentModel):
             training_sensory = self.last_sensory[0][:-1]
 
         for i in range(steps):
-            indices = torch.randperm(T-1, device=self.last_location.device)[:(T-1)]
+            indices = torch.randperm(T-1, device=self.last_location.device)[:self.context_window]
             locations = training_locations[indices]
             sensory = training_sensory[indices]
 
