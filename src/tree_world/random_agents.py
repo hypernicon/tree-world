@@ -132,8 +132,8 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
 
-        # if self.use_cuda:
-        #     torch.cuda.empty_cache()
+        if self.use_cuda:
+            torch.cuda.empty_cache()
     
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
