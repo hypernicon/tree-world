@@ -197,7 +197,7 @@ class RandomTemTAgent(AgentModel):
         indices = torch.randperm(T-1, device=self.last_location.device)[:self.context_window]
         locations = training_locations[indices]
         sensory = training_sensory[indices]
-        pruner = Pruner(locations, sensory, self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
+        pruner = Pruner(locations[None, ...], sensory[None, ...], self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
         opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
 
         pruner.to(self.last_location.device).to(self.last_location.dtype)
