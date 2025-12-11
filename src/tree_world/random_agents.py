@@ -38,7 +38,7 @@ class RandomTemTAgent(AgentModel):
         self.use_cuda = torch.cuda.is_available()
         if self.use_cuda:
             print("Moving TEM-t model to cuda")
-            self.dtype = torch.float32
+            self.dtype = torch.bfloat16
             self.tem.to("cuda")
             self.tem.to(self.dtype)
 
@@ -132,8 +132,8 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
 
-        if self.use_cuda:
-            torch.cuda.empty_cache()
+        # if self.use_cuda:
+        #     torch.cuda.empty_cache()
     
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
