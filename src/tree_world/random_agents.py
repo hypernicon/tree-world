@@ -78,11 +78,11 @@ class RandomTemTAgent(AgentModel):
             self.last_sensory = embedding[None, None, :].requires_grad_().detach()
 
         if self.use_cuda:
-            self.last_sensory = self.last_sensory.to("cuda")
+            self.last_sensory = self.last_sensory.to("cuda").to(torch.bfloat16)
             if self.last_location is not None:
-                self.last_location = self.last_location.to("cuda")
+                self.last_location = self.last_location.to("cuda").to(torch.bfloat16)
             if last_action is not None:
-                last_action = last_action.to("cuda")
+                last_action = last_action.to("cuda").to(torch.bfloat16)
 
         next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement = (
             self.tem(self.last_sensory, self.last_location, last_action)
