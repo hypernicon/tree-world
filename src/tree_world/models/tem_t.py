@@ -141,7 +141,8 @@ class GeometricActionDecoder(torch.nn.Module):
 
 
 class TemLocalizer(torch.nn.Module):
-    def __init__(self, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_heads: int=8, action_hidden_dim: int=128, dropout: float=0.1):
+    def __init__(self, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_heads: int=8, 
+                       action_hidden_dim: int=128, dropout: float=0.1, compute_window=1024):
         super().__init__()
         self.location_dim = location_dim
         self.sensory_dim = sensory_dim
@@ -155,6 +156,8 @@ class TemLocalizer(torch.nn.Module):
         self.geometric_action_decoder = GeometricActionDecoder(location_dim, action_dim, action_hidden_dim, dropout)
 
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim)
+
+        self.compute_window = compute_window
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
                 max_steps: int=4, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6):
@@ -186,7 +189,7 @@ class TemLocalizer(torch.nn.Module):
         geometric_location = self.geometric_action_decoder(prior_location, action, allow_extension=False) # <-- we've already extended the action sequence
         sensory_plus_geometric = sensory + self.position_encoder(geometric_location.detach()) # <-- stop_gradient     
         for k in range(max_steps):
-            sensory_location = self.location_refiner(sensory_plus_geometric, sensory_plus_geometric, sensory_location)
+            sensory_location = self.location_refiner(sensory_plus_geometric[:,-self.compute_window:], sensory_plus_geometric, sensory_location)
             location_disagreement = (geometric_location - sensory_location).pow(2).sum(dim=-1)
             if (location_disagreement < threshold).all():
                 break
