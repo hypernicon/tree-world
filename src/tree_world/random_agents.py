@@ -176,7 +176,7 @@ class RandomTemTAgent(AgentModel):
     
     def prune(self, steps=1000):
         pruner = Pruner(self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
-        opt = torch.nn.optim.Adam(pruner.parameters(), lr=1e-3)
+        opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
 
         assert len(pruner.parameters()) == 3
 
