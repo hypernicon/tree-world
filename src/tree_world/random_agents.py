@@ -1,3 +1,4 @@
+import sys
 import math
 from typing import Optional
 
@@ -38,6 +39,7 @@ class RandomTemTAgent(AgentModel):
         if self.use_cuda:
             print("Moving TEM-t model to cuda")
             self.tem.to("cuda")
+            self.tem.to(torch.bfloat16)
 
         self.optimizer = torch.optim.AdamW(self.tem.parameters(), lr=1e-3)
 
@@ -53,6 +55,9 @@ class RandomTemTAgent(AgentModel):
         self.last_action = None
         self.last_sensory = None
 
+        if self.use_cuda:
+            torch.cuda.empty_cache()
+
     def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
                    agent_location: torch.Tensor=None, obj_location: torch.Tensor=None, reward: float=0.0):
 
@@ -62,7 +67,7 @@ class RandomTemTAgent(AgentModel):
             last_action = None
 
         if self.use_cuda:
-            embedding = embedding.to("cuda")
+            embedding = embedding.to("cuda").to(torch.bfloat16)
 
         if self.last_sensory is not None:
             self.last_sensory = torch.cat([
@@ -117,6 +122,7 @@ class RandomTemTAgent(AgentModel):
     def train(self, epoch: int=None):
         print(f"Epoch {epoch} Step {self.t}: Taking an optimizer step with {len(self.loss)} loss values: {math.sqrt(sum(self.loss) / len(self.loss))}", end="")
         print(f" loc_loss: {math.sqrt(sum(self.loc_loss) / len(self.loc_loss))} sens_loss: {math.sqrt(sum(self.sens_loss) / len(self.sens_loss))}")
+        sys.stdout.flush()
         self.optimizer.zero_grad()
         (sum(self.loss) / len(self.loss)).backward()
         torch.nn.utils.clip_grad_norm_(self.tem.parameters(), 1.0)
@@ -124,6 +130,9 @@ class RandomTemTAgent(AgentModel):
         self.loss = []
         self.loc_loss = []
         self.sens_loss = []
+
+        if self.use_cuda:
+            torch.cuda.empty_cache()
     
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
