@@ -214,7 +214,7 @@ class RandomTemTAgent(AgentModel):
         print(f"PRUNED: final loss {loss.item()}")
         self.location_prefix = pruner.location_prefix.data.detach().clone()
         self.sensory_prefix = pruner.sensory_prefix.data.detach().clone()
-        self.sensory_key_prefix = pruner.make_sensory_keys(self.location_prefix, self.sensory_prefix)
+        self.sensory_key_prefix = pruner.make_sensory_keys(self.location_prefix, self.sensory_prefix).detach().clone()
 
         self.last_location = self.last_location[:, -1:]
         self.last_sensory = self.last_sensory[:, -1:]
