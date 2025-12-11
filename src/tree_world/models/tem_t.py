@@ -189,10 +189,22 @@ class TemLocalizer(torch.nn.Module):
         geometric_location = self.geometric_action_decoder(prior_location, action, allow_extension=False) # <-- we've already extended the action sequence
         sensory_plus_geometric = sensory + self.position_encoder(geometric_location.detach()) # <-- stop_gradient     
         for k in range(max_steps):
-            sensory_location[:,-self.compute_window:] = self.location_refiner(
+            sensory_location_increment = self.location_refiner(
                 sensory_plus_geometric[:,-self.compute_window:], sensory_plus_geometric, sensory_location
             )
-            location_disagreement = (geometric_location - sensory_location).pow(2).sum(dim=-1)
+
+            if T > self.compute_window:
+                sensory_location = torch.cat([
+                    sensory_location[:,:-self.compute_window],
+                    sensory_location_increment
+                ], dim=1)
+            else:
+                sensory_location = sensory_location_increment
+
+            location_disagreement = (
+                geometric_location[:, -self.compute_window:] - sensory_location[:, -self.compute_window:]
+            ).pow(2).sum(dim=-1)
+            
             if (location_disagreement < threshold).all():
                 break
 
