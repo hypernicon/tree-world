@@ -87,7 +87,7 @@ class TemTransformerLayer(torch.nn.Module):
         attn_output = self.v_out(attn_output)
 
         if add_residual:
-            x = value + self.feed_forward_norm(attn_output)
+            x = value[:, -attn_output.shape[1]:] + self.feed_forward_norm(attn_output)
         else:
             x = self.feed_forward_norm(attn_output)
 
@@ -204,7 +204,7 @@ class TemLocalizer(torch.nn.Module):
             location_disagreement = (
                 geometric_location[:, -self.compute_window:] - sensory_location[:, -self.compute_window:]
             ).pow(2).sum(dim=-1)
-            
+
             if (location_disagreement < threshold).all():
                 break
 
