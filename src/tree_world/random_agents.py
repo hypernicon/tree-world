@@ -38,8 +38,9 @@ class RandomTemTAgent(AgentModel):
         self.use_cuda = torch.cuda.is_available()
         if self.use_cuda:
             print("Moving TEM-t model to cuda")
+            self.dtype = torch.float32
             self.tem.to("cuda")
-            self.tem.to(torch.bfloat16)
+            self.tem.to(self.dtype)
 
         self.optimizer = torch.optim.AdamW(self.tem.parameters(), lr=1e-3)
 
@@ -67,7 +68,7 @@ class RandomTemTAgent(AgentModel):
             last_action = None
 
         if self.use_cuda:
-            embedding = embedding.to("cuda").to(torch.bfloat16)
+            embedding = embedding.to("cuda").to(self.dtype)
 
         if self.last_sensory is not None:
             self.last_sensory = torch.cat([
@@ -78,11 +79,11 @@ class RandomTemTAgent(AgentModel):
             self.last_sensory = embedding[None, None, :].requires_grad_().detach()
 
         if self.use_cuda:
-            self.last_sensory = self.last_sensory.to("cuda").to(torch.bfloat16)
+            self.last_sensory = self.last_sensory.to("cuda").to(self.dtype)
             if self.last_location is not None:
-                self.last_location = self.last_location.to("cuda").to(torch.bfloat16)
+                self.last_location = self.last_location.to("cuda").to(self.dtype)
             if last_action is not None:
-                last_action = last_action.to("cuda").to(torch.bfloat16)
+                last_action = last_action.to("cuda").to(self.dtype)
 
         next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement = (
             self.tem(self.last_sensory, self.last_location, last_action)
