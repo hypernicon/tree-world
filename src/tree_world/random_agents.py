@@ -18,7 +18,7 @@ class Pruner(torch.nn.Module):
         self.sensory_key_prefix = torch.nn.Parameter(torch.randn(1, num_slots, sensory_dim))
 
     def forward(self, locations, sensory):
-        assert self.locations.shape[1] == locations.shape[1]
+        assert self.location_prefix.shape[1] == locations.shape[1]
         sensory_out = self.localizer[0].sensory_predictor(locations, self.location_prefix, self.sensory_prefix)
         sensory_with_location = sensory + self.localizer[0].position_encoder(locations)
         location_out = self.localizer[0].location_refiner(sensory_with_location, self.sensory_key_prefix, self.sensory)
