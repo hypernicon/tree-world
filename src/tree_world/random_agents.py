@@ -178,7 +178,7 @@ class RandomTemTAgent(AgentModel):
         pruner = Pruner(self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
         opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
 
-        assert len(pruner.parameters()) == 3
+        assert len([p for p in pruner.parameters()]) == 3
 
         T = self.last_location.shape[1]
 
