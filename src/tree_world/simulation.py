@@ -690,7 +690,7 @@ if __name__ == "__main__":
 
         if args.save_path is not None and args.save_path != "":
             import torch
-            torch.save(world.agent.model.state_dict(), args.save_path)
+            torch.save(world.agent.model.tem.state_dict(), args.save_path)
             print(f"Model saved to {args.save_path}")
             print("--------------------------------")
 
