@@ -27,7 +27,7 @@ class Pruner(torch.nn.Module):
         location_out = self.localizer[0].location_refiner(sensory_with_location, sensory_key_prefix, self.location_prefix)
 
         sensory_error = (sensory - sensory_out).pow(2).sum(dim=-1).mean()
-        location_error = (location - location_out).pow(2).sum(dim=-1).mean()
+        location_error = (locations - location_out).pow(2).sum(dim=-1).mean()
         
         return sensory_error + location_error
 
