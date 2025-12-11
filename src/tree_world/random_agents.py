@@ -187,9 +187,13 @@ class RandomTemTAgent(AgentModel):
 
         if self.location_prefix is not None:
             training_locations = torch.cat([self.last_location[0][:-1], self.location_prefix[0]], dim=0)
+        else:
+            training_locations = self.last_location[0][:-1]
         
         if self.sensory_prefix is not None:
             training_sensory = torch.cat([self.last_sensory[0][:-1], self.sensory_prefix[0]], dim=0)
+        else:
+            training_sensory = self.last_sensory[0][:-1]
 
         for i in range(steps):
             indices = torch.randperm(T-1, device=self.last_location.device)[:(T-1)]
