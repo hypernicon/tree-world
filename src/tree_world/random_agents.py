@@ -31,9 +31,15 @@ class RandomTemTAgent(AgentModel):
 
         self.step_size = step_size
 
-        self.optimizer = torch.optim.AdamW(self.tem.parameters(), lr=1e-3)
         self.lmbda = lmbda
         self.dim = dim
+
+        self.use_cuda = torch.cuda.is_available()
+        if self.use_cuda:
+            print("Moving TEM-t model to cuda")
+            self.tem.to("cuda")
+
+        self.optimizer = torch.optim.AdamW(self.tem.parameters(), lr=1e-3)
 
     def reset(self):
         self.t = 0
@@ -55,6 +61,9 @@ class RandomTemTAgent(AgentModel):
         else:
             last_action = None
 
+        if self.use_cuda:
+            embedding = embedding.to("cuda")
+
         if self.last_sensory is not None:
             self.last_sensory = torch.cat([
                     self.last_sensory.detach(),
@@ -63,23 +72,30 @@ class RandomTemTAgent(AgentModel):
         else:
             self.last_sensory = embedding[None, None, :].requires_grad_().detach()
 
+        if self.use_cuda:
+            self.last_sensory = self.last_sensory.to("cuda")
+            if self.last_location is not None:
+                self.last_location = self.last_location.to("cuda")
+            if last_action is not None:
+                last_action = last_action.to("cuda")
+
         next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement = (
             self.tem(self.last_sensory, self.last_location, last_action)
         )
 
         if torch.isnan(next_location).any() or torch.isnan(sensory_location).any() or torch.isnan(sensory_predicted).any():
             print(f"NaN detected at t={self.t}")
-            print(f"last_location: {torch.argmax(torch.isnan(self.last_location).float(), dim=1)}")
+            print(f"last_location: {torch.argmax(torch.isnan(self.last_location).cpu().float(), dim=1)}")
             print(f"last_action: {self.last_action}")
-            print(f"last_sensory: {torch.argmax(torch.isnan(self.last_sensory).float(), dim=1)}")
-            print(f"next_location: {torch.argmax(torch.isnan(next_location).float(), dim=1)}")
-            print(f"sensory_location: {torch.argmax(torch.isnan(sensory_location).float(), dim=1)}")
-            print(f"sensory_predicted: {torch.argmax(torch.isnan(sensory_predicted).float(), dim=1)}")
+            print(f"last_sensory: {torch.argmax(torch.isnan(self.last_sensory).cpu().float(), dim=1)}")
+            print(f"next_location: {torch.argmax(torch.isnan(next_location).cpu().float(), dim=1)}")
+            print(f"sensory_location: {torch.argmax(torch.isnan(sensory_location).cpu().float(), dim=1)}")
+            print(f"sensory_predicted: {torch.argmax(torch.isnan(sensory_predicted).cpu().float(), dim=1)}")
             raise ValueError("NaN detected")
         
         # location_belief, loss = self.tem(self.last_location, self.last_action, embedding[None, :])
         self.last_location = next_location.detach().requires_grad_()
-        self.location_history.append(sensory_location.detach())
+        self.location_history = sensory_location.detach()
         self.actual_location_history.append(agent_location)
         self.loss.append(sensory_error + self.lmbda * location_disagreement)
         self.loc_loss.append(location_disagreement)
