@@ -207,7 +207,7 @@ class RandomTemTAgent(AgentModel):
             loss.backward()
             opt.step()
 
-            if i % step == 0:
+            if i % steps == 0:
                 print(f"PRUNING: loss {loss.item()}", end="\r")
                 sys.stdout.flush()
         
