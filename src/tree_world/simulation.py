@@ -46,6 +46,7 @@ class TreeWorldConfig:
     model_type: str = "AgentModel"
     simple_tem: bool = True
     max_memory_size: int = 1024
+    dropout: float = 0.1
 
     # Sensory inputs
     sensory_embedding_dim: int = 1024
@@ -56,6 +57,8 @@ class TreeWorldConfig:
     embed_dim: int = 1024
     dropout: float = 0.1
     num_guesses: int = 5
+    num_heads: int = 8
+    action_hidden_dim: int = 128
 
     # Sensor
     sensor_type: str = "SimpleSensor"
@@ -529,7 +532,7 @@ class TreeWorld:
         
         self.grid_drive_values = None
     
-    def run(self, num_steps: int, record=False, allow_death=True, live_viz=None):
+    def run(self, num_steps: int, record=False, allow_death=True, live_viz=None, id=None):
         if self.needs_reset:
             self.reset()
         
@@ -552,7 +555,7 @@ class TreeWorld:
                 return False
 
             if i % 100 == 0 and i > 0 and hasattr(self.agent.model, "train"):
-                self.agent.model.train()
+                self.agent.model.train(epoch=id)
 
             if i % 10 == 0:
                 if hasattr(self.agent.model, "get_drive_field_from_memory"):
@@ -631,29 +634,44 @@ class TreeWorld:
         return cls(trees, agent, config)
 
 
+def parse_args():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--runs", type=int, default=100)
+    parser.add_argument("--model", type=str, default="tree_world.random_agents.RandomTemTAgent")
+    parser.add_argument("--save_path", type=str, default="tree_world_model.pt")
+    parser.add_argument("--no_viz", action="store_true")
+    parser.add_argument("--image_save_path", type=str, default="tree_world_run.png")
+    parser.add_argument("--prevent_death", action="store_true")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
     import sys
-    if len(sys.argv) > 1:
-        steps = int(sys.argv[1])
-    else:
-        steps = 1000
+    args = parse_args()
+    steps = args.steps
+    runs = args.runs
 
     config = TreeWorldConfig()
-    config.model_type = "tree_world.drive_agents.DriveBasedAgentWithLocalPolicy" # "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
+    config.location_dim = 128
+    # config.model_type = "tree_world.drive_agents.DriveBasedAgentWithLocalPolicy" # "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
+    config.model_type = "tree_world.random_agents.RandomTemTAgent"
 
     world = TreeWorld.random_from_config(config)
-    viz = LiveVizMPL(world)
+    viz = LiveVizMPL(world) if not args.no_viz else None
 
-    runs = 100 if hasattr(world.agent.model, "train") else 1
+    runs = args.runs if hasattr(world.agent.model, "train") else 1
     print(f"Running {runs} runs")
     print("--------------------------------")
     for i in range(runs):
         world.randomize()
-        viz.reset()
+        if viz is not None:
+            viz.reset()
 
         s = min([steps, (i + 1) * 1000])
         print(f"Running tree world {i} for {s} steps...")
-        world.run(s, record=(i == runs - 1), allow_death=True, live_viz=viz)
+        world.run(s, record=(i == runs - 1), allow_death=not args.prevent_death, live_viz=viz, id=i)
         print()
         print("Tree world run complete.")
 
@@ -670,6 +688,12 @@ if __name__ == "__main__":
 
         print("--------------------------------")
 
+        if args.save_path is not None and args.save_path != "":
+            import torch
+            torch.save(world.agent.model.state_dict(), args.save_path)
+            print(f"Model saved to {args.save_path}")
+            print("--------------------------------")
+
     from tree_world.visualize import visualize_treeworld_run
     visualize_treeworld_run(
         world.tree_locations.numpy().tolist(),
@@ -679,5 +703,5 @@ if __name__ == "__main__":
         world.record_healths,
         config.max_health,
         title="TreeWorld run",
-        save_path="tree_world_run.png",
+        save_path=args.image_save_path,
     )

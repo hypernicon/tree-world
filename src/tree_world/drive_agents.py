@@ -5,7 +5,7 @@ import torch
 from tree_world.simulation import AgentModel, TreeWorldConfig
 from tree_world.models.memory import SpatialMemory
 from tree_world.states import Location, DriveManager, DriveTarget
-from tree_world.models.drives import train_drive_classifier
+from tree_world.models.drives import train_drive_classifier, DriveEmbeddingClassifierNonExclusive
 
 
 class DriveBasedAgentWithMemory(AgentModel):
@@ -143,7 +143,7 @@ class DriveBasedAgentWithMemory(AgentModel):
     @classmethod
     def from_config(cls, config: TreeWorldConfig):
         memory = SpatialMemory.from_config(config)
-        drive_classifier, drive_keys = train_drive_classifier(config, with_ids=False)
+        drive_classifier, drive_keys = train_drive_classifier(config, with_ids=False, nonexclusive=True)
         drive_manager = DriveManager(drive_classifier, drive_keys, memory)
         return cls(
             config.sensory_embedding_dim,
