@@ -54,10 +54,19 @@ class TemTransformerLayer(torch.nn.Module):
         query: torch.Tensor, 
         key: torch.Tensor, 
         value: torch.Tensor, 
+        key_prefix: Optional[torch.Tensor]=None,
+        value_prefix: Optional[torch.Tensor]=None,
         add_residual: bool=True, 
         allow_self_attention: bool=True,
-        mask: torch.Tensor=None
+        mask: Optional[torch.Tensor]=None
     ):
+        if key_prefix is not None:
+            key = torch.cat([key_prefix, key], dim=1)
+
+        orig_value = value
+        if value_prefix is not None:
+            value = torch.cat([value_prefix, value], dim=1)
+
         query = self.q_proj(query)
         key = self.k_proj(key)
         value_p = self.v_proj(value)
@@ -87,7 +96,7 @@ class TemTransformerLayer(torch.nn.Module):
         attn_output = self.v_out(attn_output)
 
         if add_residual:
-            x = value[:, -attn_output.shape[1]:] + self.feed_forward_norm(attn_output)
+            x = orig_value + self.feed_forward_norm(attn_output)
         else:
             x = self.feed_forward_norm(attn_output)
 
@@ -155,18 +164,18 @@ class TemLocalizer(torch.nn.Module):
 
         self.geometric_action_decoder = GeometricActionDecoder(location_dim, action_dim, action_hidden_dim, dropout)
 
-        self.position_encoder = torch.nn.Linear(location_dim, sensory_dim)
-
-        self.compute_window = compute_window
+        self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
+                sensory_prefix: Optional[torch.Tensor]=None, sensory_key_prefix: Optional[torch.Tensor]=None, 
+                location_prefix: Optional[torch.Tensor]=None,
                 max_steps: int=4, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6):
         assert max_steps > 0
 
         B, T, S = sensory.shape
         if prior_location is None:
             initial_location = torch.empty((B, 1, self.location_dim), dtype=sensory.dtype, device=sensory.device).uniform_(-1, 1)
-            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0
+            return initial_location, initial_location, torch.zeros_like(sensory), torch.zeros_like(sensory), 0.0, 0.0
         
         # These next two ifs let us just supply the previous output location and action sequence, and extend them to the new length
         if prior_location.shape[1] < T:
@@ -189,20 +198,13 @@ class TemLocalizer(torch.nn.Module):
         geometric_location = self.geometric_action_decoder(prior_location, action, allow_extension=False) # <-- we've already extended the action sequence
         sensory_plus_geometric = sensory + self.position_encoder(geometric_location.detach()) # <-- stop_gradient     
         for k in range(max_steps):
-            sensory_location_increment = self.location_refiner(
-                sensory_plus_geometric[:,-self.compute_window:], sensory_plus_geometric, sensory_location
+            sensory_location = self.location_refiner(
+                sensory_plus_geometric, sensory_plus_geometric, sensory_location,
+                key_prefix=sensory_key_prefix, value_prefix=location_prefix
             )
 
-            if T > self.compute_window:
-                sensory_location = torch.cat([
-                    sensory_location[:,:-self.compute_window],
-                    sensory_location_increment
-                ], dim=1)
-            else:
-                sensory_location = sensory_location_increment
-
             location_disagreement = (
-                geometric_location[:, -self.compute_window:] - sensory_location[:, -self.compute_window:]
+                geometric_location - sensory_location
             ).pow(2).sum(dim=-1)
 
             if (location_disagreement < threshold).all():
@@ -211,11 +213,12 @@ class TemLocalizer(torch.nn.Module):
             sensory_location = (1 - refine_alpha) * sensory_location + refine_alpha * geometric_location.detach()
 
         sensory_predicted = self.sensory_predictor(
-            sensory_location, sensory_location, sensory, allow_self_attention=False, add_residual=False
+            sensory_location, sensory_location, sensory, allow_self_attention=False, add_residual=False,
+            key_prefix=location_prefix, value_prefix=sensory_prefix
         )
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)  # <-- or, if we want to use a norm comparison
 
-        return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean()
+        return geometric_location, sensory_location, sensory_predicted, sensory_plus_geometric, sensory_error.mean(), location_disagreement.mean()
 
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
