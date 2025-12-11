@@ -168,7 +168,7 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
 
-        if self.last_sensory_keys.shape[1] > self.context_window:
+        if self.last_location.shape[1] > self.context_window:
             self.prune()
 
         if self.use_cuda:
