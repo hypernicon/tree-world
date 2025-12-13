@@ -1,6 +1,97 @@
+import math
 import torch
 
 from typing import Optional
+
+
+def make_lattice_basis(alphas, dim: int = 2):
+    """
+    Construct lattice basis matrices B_j for each grid module j in d dimensions.
+
+    Args:
+        alphas: 1D tensor of shape (J,) with spatial frequencies α_j.
+        dim: spatial dimension d (>=1).
+
+    Returns:
+        B: tensor of shape (J, d, d), where B[j] is the lattice basis B_j.
+        K: tensor of shape (d+1, d) with simplex directions as rows.
+        K_dagger: tensor of shape (d, d+1) with pseudoinverse of K, returned for convenience.
+    """
+    if dim < 1:
+        raise ValueError("dimension must be >= 1")
+
+    # Ensure alphas is a tensor of shape (J,)
+    dtype = alphas.dtype
+    device = alphas.device
+    J = alphas.shape[0]
+
+    # 1. Build a basis U for the null subspace of the simplex K
+    U = torch.cat([torch.eye(dim, dtype=dtype, device=device), -torch.ones(1, dim, dtype=dtype, device=device)], dim=0)
+
+    # 2. Build a regular simplex in R^(d+1) and normalize
+    Q, _ = torch.linalg.qr(U, mode="reduced")  # Q: (d+1, d)
+    V = torch.eye(dim + 1, dtype=dtype, device=device) - (1.0 / (dim + 1))
+    K = V @ Q  # (d+1, d)
+    K = K / K.norm(dim=1, keepdim=True)  # each row is now unit length
+
+    # Pseudoinverse of K: K^† ∈ R^{d×(d+1)}
+    K_dagger = torch.linalg.pinv(K)
+
+    # Base (unscaled) lattice generator: shape (d, d)
+    base = K_dagger @ U
+
+    # 3. Scale by 2π / α_j for each module
+    scale = (2.0 * math.pi) / alphas.view(J, 1, 1)  # (J, 1, 1)
+    B = scale * base[None, ...]                  # (J, d, d)
+
+    return B, K, K_dagger
+
+
+def make_alphas(location_dim: int, dim: int = 2, scale: float = 10.0,
+                ratio: float = math.sqrt(2.0), dtype=torch.get_default_dtype(), device=torch.device("cpu")) -> torch.Tensor:
+    """
+    Choose module spatial frequencies alpha_j given a location code size and
+    a target "safe" displacement scale.
+
+    Args:
+        location_dim: int, total number of phase channels = J * (d+1).
+        dim: spatial dimension d.
+        scale: radius such that for ||Δx|| < scale, the coarsest module
+               is unambiguous (λ_0/2 ≈ scale).
+        ratio: geometric ratio between successive periods (default √2).
+
+    Returns:
+        alphas: (J,) tensor of spatial frequencies α_j, with j=0 coarsest.
+    """
+    num_dirs = dim + 1
+    assert location_dim % (2 * num_dirs) == 0,  f"location_dim={location_dim} must be divisible by 2*(dimension+1)={2*num_dirs}"
+    J = location_dim // num_dirs // 2  # number of modules
+    j_idx = torch.arange(J, dtype=dtype, device=device)
+    return (math.pi / scale) * ratio ** j_idx
+
+
+def solve_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
+    d, dplus = K_dagger.shape
+    J, _, _ = lattice_basis.shape
+    batch_size, time_steps, L = delta_thetas.shape
+    delta_thetas = delta_thetas.view(batch_size, time_steps, J, dplus, 1)
+    displacement_base = (K_dagger[None, None, None, ...] @ delta_thetas).view(batch_size, time_steps, J, d) / alphas[None, None, :, None]
+
+    # displacement_base is of shape (batch_size, time_steps, J, d)
+    reference_displacement = displacement_base[..., 0, :]
+    errors = reference_displacement[..., None, :] - displacement_base
+
+    lattice_basis = lattice_basis.view(1, 1, J, d, d)
+    offsets = torch.linalg.solve(lattice_basis, errors[..., None]).round()
+    deltas = displacement_base + (lattice_basis @ offsets).squeeze(-1)
+    return deltas
+
+
+def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
+    deltas = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)
+
+    # deltas has shape (batch_size, time_steps, J, d)
+    return deltas.var(dim=-2).mean()
 
 
 class TemTransformerFeedForward(torch.nn.Module):
@@ -105,7 +196,7 @@ class TemTransformerLayer(torch.nn.Module):
 
 
 class GeometricActionDecoder(torch.nn.Module):
-    def __init__(self, location_dim: int, action_dim: int, hidden_dim: int, dropout: float=0.25):
+    def __init__(self, location_dim: int, action_dim: int, hidden_dim: int, dropout: float=0.25, physical_dim: int=2, physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
         super().__init__()
         self.location_dim = location_dim
         self.action_dim = action_dim
@@ -121,7 +212,18 @@ class GeometricActionDecoder(torch.nn.Module):
             torch.nn.Linear(hidden_dim, location_dim // 2),
         )
 
-    def forward(self, location: torch.Tensor, action: torch.Tensor, eps: float=1e-6, allow_extension: bool=True):
+        self.physical_dim = physical_dim
+        self.physical_scale = physical_scale
+        self.physical_ratio = physical_ratio
+        self.alphas = torch.nn.Parameter(make_alphas(location_dim, physical_dim, physical_scale, physical_ratio))
+        lattice_basis, _, K_dagger = make_lattice_basis(self.alphas, physical_dim)
+        self.lattice_basis = torch.nn.Parameter(lattice_basis)
+        self.K_dagger = torch.nn.Parameter(K_dagger)
+
+        assert self.location_dim % (2 * self.physical_dim) == 0
+
+
+    def forward(self, location: torch.Tensor, action: torch.Tensor, eps: float=1e-6, allow_extension: bool=True, regularize: bool=True):
         B, T, D = location.shape
         assert D == self.location_dim
         assert (B, T, self.action_dim) == action.shape
@@ -143,10 +245,17 @@ class GeometricActionDecoder(torch.nn.Module):
         # shift the location one step forward to align with the past; output is one step longer than the input
         next_location = torch.cat([location[:, :1], next_location], dim=1)
 
-        if allow_extension:
-            return next_location
+        if regularize:
+            displacement_loss = loss_for_deltas(thetas, self.K_dagger, self.lattice_basis, self.alphas)
+
+        if not allow_extension:
+            next_location = next_location[:, :-1]
+
+        if regularize:
+            return next_location, displacement_loss
         else:
-            return next_location[:, :-1]
+            return next_location
+
 
 
 class TemLocalizer(torch.nn.Module):
@@ -175,7 +284,7 @@ class TemLocalizer(torch.nn.Module):
         B, T, S = sensory.shape
         if prior_location is None:
             initial_location = torch.empty((B, 1, self.location_dim), dtype=sensory.dtype, device=sensory.device).uniform_(-1, 1)
-            return initial_location, initial_location, torch.zeros_like(sensory), torch.zeros_like(sensory), 0.0, 0.0
+            return initial_location, initial_location, torch.zeros_like(sensory), torch.zeros_like(sensory), 0.0, 0.0, 0.0
         
         # These next two ifs let us just supply the previous output location and action sequence, and extend them to the new length
         if prior_location.shape[1] < T:
@@ -195,7 +304,7 @@ class TemLocalizer(torch.nn.Module):
             )], dim=1)
 
         sensory_location = prior_location
-        geometric_location = self.geometric_action_decoder(prior_location, action, allow_extension=False) # <-- we've already extended the action sequence
+        geometric_location, displacement_loss = self.geometric_action_decoder(prior_location, action, allow_extension=False, regularize=True) # <-- we've already extended the action sequence
         sensory_plus_geometric = sensory + self.position_encoder(geometric_location.detach()) # <-- stop_gradient     
         for k in range(max_steps):
             sensory_location = self.location_refiner(
@@ -218,7 +327,7 @@ class TemLocalizer(torch.nn.Module):
         )
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)  # <-- or, if we want to use a norm comparison
 
-        return geometric_location, sensory_location, sensory_predicted, sensory_plus_geometric, sensory_error.mean(), location_disagreement.mean()
+        return geometric_location, sensory_location, sensory_predicted, sensory_plus_geometric, sensory_error.mean(), location_disagreement.mean(), displacement_loss
 
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
