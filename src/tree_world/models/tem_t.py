@@ -82,7 +82,7 @@ def solve_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice
     errors = reference_displacement[..., None, :] - displacement_base
 
     lattice_basis = lattice_basis.view(1, 1, J, d, d)
-    offsets = torch.linalg.solve(lattice_basis, errors[..., None]).round()
+    offsets = torch.linalg.solve(lattice_basis.float(), errors[..., None].float()).round().to(delta_thetas.dtype)
     deltas = displacement_base + (lattice_basis @ offsets).squeeze(-1)
     return deltas
 
