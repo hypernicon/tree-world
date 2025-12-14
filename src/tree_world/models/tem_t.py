@@ -149,7 +149,8 @@ class TemTransformerLayer(torch.nn.Module):
         value_prefix: Optional[torch.Tensor]=None,
         add_residual: bool=True, 
         allow_self_attention: bool=True,
-        mask: Optional[torch.Tensor]=None
+        mask: Optional[torch.Tensor]=None,
+        causal: bool=True
     ):
         if key_prefix is not None:
             key = torch.cat([key_prefix, key], dim=1)
@@ -165,21 +166,28 @@ class TemTransformerLayer(torch.nn.Module):
         value_p = self.attention_norm(value_p)
 
         if mask is None:
-            if allow_self_attention:
-                diagonal = 1
-            else:
-                diagonal = 0
+            if causal:
+                if allow_self_attention:
+                    diagonal = 1
+                else:
+                    diagonal = 0
 
-            base = torch.full((query.shape[1], key.shape[1]), float('-inf'), dtype=query.dtype, device=query.device)
-            mask = torch.triu(base, diagonal=diagonal)
+                base = torch.full((query.shape[1], key.shape[1]), float('-inf'), dtype=query.dtype, device=query.device)
+                mask = torch.triu(base, diagonal=diagonal)
 
-            if not allow_self_attention:
-                # CRITICAL & NONOBVIOUS: prevent NaN in the gradient of the first query; we'll patch the output later
-                mask[0, :] = 0.0
+                if not allow_self_attention:
+                    # CRITICAL & NONOBVIOUS: prevent NaN in the gradient of the first query; we'll patch the output later
+                    # problem is that the first time step has nothing to pay attention to in causal mode, so we get NaN
+                    mask[0, :] = 0.0
+
+            elif not allow_self_attention:
+                I = torch.eye(max(query.shape[1], key.shape[1]), dtype=torch.bool, device=query.device)[:query.shape[1], :key.shape[1]]
+                mask = torch.zeros((query.shape[1], key.shape[1]), dtype=query.dtype, device=query.device)
+                mask = mask.masked_fill(I, float('-inf'))
 
         attn_output, attn_output_weights = self.attention(query, key, value_p, attn_mask=mask)
 
-        if not allow_self_attention:
+        if causal and not allow_self_attention: # non-causal no self-attention doesn't have the NaN problem
             attn_output[:, 0, :] = torch.zeros_like(attn_output[:, 0, :])
             if attn_output.shape[1] > 1:
                 attn_output[:, 1, :] = value_p[:, 0, :]
@@ -325,11 +333,19 @@ class TemLocalizer(torch.nn.Module):
 
             sensory_location = (1 - refine_alpha) * sensory_location + refine_alpha * geometric_location.detach()
 
+        # train the sensory predictor on the prefix too, if present
+        # the prefix is all prior salient info, so this should be prioritized in training.
+        sensory_location_with_prefix = sensory_location
+        sensory_with_prefix = sensory
+        if sensory_prefix is not None and location_prefix is not None:
+            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
+            sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
+
         sensory_predicted = self.sensory_predictor(
-            sensory_location, sensory_location, sensory, allow_self_attention=False, add_residual=False,
-            key_prefix=location_prefix, value_prefix=sensory_prefix
+            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, allow_self_attention=False, add_residual=False,
+            key_prefix=location_prefix, value_prefix=sensory_prefix, causal=False
         )
-        sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)  # <-- or, if we want to use a norm comparison
+        sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
 
         return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
