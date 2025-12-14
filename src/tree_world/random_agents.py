@@ -56,6 +56,8 @@ class RandomTemTAgent(AgentModel):
 
         self.salience_scores = []
         self.salience_score_prefix = None
+        self.rewards = []
+        self.reward_prefix = None
 
     def reset(self):
         self.t = 0
@@ -76,6 +78,9 @@ class RandomTemTAgent(AgentModel):
 
         self.salience_scores = []
         self.salience_score_prefix = None
+
+        self.rewards = []
+        self.reward_prefix = None
 
         if self.use_cuda:
             torch.cuda.empty_cache()
@@ -133,6 +138,7 @@ class RandomTemTAgent(AgentModel):
         self.displacement_loss.append(displacement_loss)
 
         self.salience_scores.append(0.01 * sensory_error.item() + math.abs(reward))
+        self.rewards.append(reward)
 
         position_delta = torch.randn(self.dim) * self.step_size
 
@@ -194,11 +200,17 @@ class RandomTemTAgent(AgentModel):
         self.sensory_prefix = old_sensory[indices][None, ...]
         self.sensory_key_prefix = self.tem.make_sensory_keys(self.location_prefix, self.sensory_prefix)[None, ...]
         self.salience_score_prefix = old_salience_scores[indices][None, ...]
+        self.reward_prefix = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)[None, ...]
+
+        print("AFTER PRUNING:")
+        print(f"rewards: {self.reward_prefix[0].detach().cpu().numpy().tolist()[:100]}")
+        print(f"salience: {self.salience_score_prefix[0].detach().cpu().numpy().tolist()[:100]}")
 
         self.last_location = self.last_location[:, -self.buffer:]
         self.last_sensory = self.last_sensory[:, -self.buffer:]
         self.last_action = self.last_action[-self.buffer:]
         self.salience_scores = self.salience_scores[-self.buffer:]
+        self.rewards = self.rewards[-self.buffer:]
     
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
