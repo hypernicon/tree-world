@@ -287,7 +287,7 @@ class TemLocalizer(torch.nn.Module):
         B, T, S = sensory.shape
         if prior_location is None:
             initial_location = torch.empty((B, 1, self.location_dim), dtype=sensory.dtype, device=sensory.device).uniform_(-1, 1)
-            return initial_location, initial_location, torch.zeros_like(sensory), torch.zeros_like(sensory), 0.0, 0.0, 0.0
+            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0
         
         # These next two ifs let us just supply the previous output location and action sequence, and extend them to the new length
         if prior_location.shape[1] < T:
@@ -331,7 +331,7 @@ class TemLocalizer(torch.nn.Module):
         )
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)  # <-- or, if we want to use a norm comparison
 
-        return geometric_location, sensory_location, sensory_predicted, sensory_plus_geometric, sensory_error.mean(), location_disagreement.mean(), displacement_loss
+        return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
     def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
         return sensory + self.position_encoder(location)

@@ -111,7 +111,7 @@ class RandomTemTAgent(AgentModel):
             if last_action is not None:
                 last_action = last_action.to("cuda").to(self.dtype)
 
-        next_location, sensory_location, sensory_predicted, sensory_keys, sensory_error, location_disagreement, displacement_loss = (
+        next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
                 self.last_sensory, self.last_location, last_action, 
                 location_prefix=self.location_prefix, sensory_prefix=self.sensory_prefix, sensory_key_prefix=self.sensory_key_prefix
@@ -197,13 +197,21 @@ class RandomTemTAgent(AgentModel):
         else:
             old_salience_scores = torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
 
+        if self.reward_prefix is not None:
+            old_rewards = torch.cat([
+                torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device), 
+                self.reward_prefix[0]
+            ], dim=0)
+        else:
+            old_rewards = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
+
         indices = torch.argsort(old_salience_scores, dim=0, descending=True)[:self.context_window]
 
         self.location_prefix = old_locations[indices][None, ...].detach()
         self.sensory_prefix = old_sensory[indices][None, ...].detach()
         self.sensory_key_prefix = self.tem.make_sensory_keys(self.location_prefix, self.sensory_prefix).detach()
         self.salience_score_prefix = old_salience_scores[indices][None, ...].detach()
-        self.reward_prefix = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)[None, ...].detach()
+        self.reward_prefix = old_rewards[indices][None, ...].detach()
 
         print("AFTER PRUNING:")
         print(f"rewards: {self.reward_prefix[0].detach().cpu().float().numpy().tolist()[:100]}")
