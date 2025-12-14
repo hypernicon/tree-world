@@ -16,7 +16,8 @@ class RandomTemTAgent(AgentModel):
         lmbda: float=1.0,
         beta: float=100.0,
         dim: int=2,
-        context_window: int=1024
+        context_window: int=768,
+        buffer: int=256
     ):
         self.t = 0
 
@@ -52,7 +53,7 @@ class RandomTemTAgent(AgentModel):
         self.optimizer = torch.optim.AdamW(self.tem.parameters(), lr=1e-3)
 
         self.context_window = context_window
-        self.buffer = context_window // 8
+        self.buffer = buffer
 
         self.salience_scores = []
         self.salience_score_prefix = None
