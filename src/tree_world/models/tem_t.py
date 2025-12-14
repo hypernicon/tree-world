@@ -308,7 +308,7 @@ class TemLocalizer(torch.nn.Module):
 
         sensory_location = prior_location
         geometric_location, displacement_loss = self.geometric_action_decoder(prior_location, action, allow_extension=False, regularize=True) # <-- we've already extended the action sequence
-        sensory_plus_geometric = sensory + self.position_encoder(geometric_location.detach()) # <-- stop_gradient     
+        sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
         for k in range(max_steps):
             sensory_location = self.location_refiner(
                 sensory_plus_geometric, sensory_plus_geometric, sensory_location,
@@ -332,6 +332,9 @@ class TemLocalizer(torch.nn.Module):
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)  # <-- or, if we want to use a norm comparison
 
         return geometric_location, sensory_location, sensory_predicted, sensory_plus_geometric, sensory_error.mean(), location_disagreement.mean(), displacement_loss
+    
+    def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
+        return sensory + self.position_encoder(location)
 
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):

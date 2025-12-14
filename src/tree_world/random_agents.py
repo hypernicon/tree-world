@@ -8,34 +8,6 @@ from tree_world.simulation import AgentModel
 from tree_world.models.tem_t import TemLocalizer, TemTransformerLayer
 
 
-class Pruner(torch.nn.Module):
-    def __init__(self, locations, sensory, localizer, num_slots, location_dim, sensory_dim):
-        super().__init__()
-        self.localizer = [localizer] # Hide it from the graph
-
-        self.location_prefix = torch.nn.Parameter(locations.clone())
-        self.sensory_prefix = torch.nn.Parameter(sensory.clone())
-
-    def make_sensory_keys(self, locations, sensory):
-        return sensory + self.localizer[0].position_encoder(locations)
-
-    def forward(self, locations, sensory):
-        assert self.location_prefix.shape[1] == locations.shape[1]
-        sensory_with_location = self.make_sensory_keys(locations, sensory)
-        sensory_key_prefix = self.make_sensory_keys(self.location_prefix, self.sensory_prefix)
-
-        sensory_out_1 = self.localizer[0].sensory_predictor(locations, self.location_prefix, self.sensory_prefix, add_residual=False)
-        location_out_1 = self.localizer[0].location_refiner(sensory_with_location, sensory_key_prefix, self.location_prefix)
-
-        sensory_out_2 = self.localizer[0].sensory_predictor(locations, locations, sensory, allow_self_attention=False, add_residual=False)
-        location_out_2 = self.localizer[0].location_refiner(sensory_with_location, sensory_with_location, locations, allow_self_attention=False)
-
-        sensory_error = (sensory_out_1 - sensory_out_2).pow(2).sum(dim=-1).mean()
-        location_error = (location_out_1 - location_out_2).pow(2).sum(dim=-1).mean()
-        
-        return sensory_error + location_error
-
-
 class RandomTemTAgent(AgentModel):
     def __init__(
         self, 
@@ -80,6 +52,10 @@ class RandomTemTAgent(AgentModel):
         self.optimizer = torch.optim.AdamW(self.tem.parameters(), lr=1e-3)
 
         self.context_window = context_window
+        self.buffer = context_window // 8
+
+        self.salience_scores = []
+        self.salience_score_prefix = None
 
     def reset(self):
         self.t = 0
@@ -97,6 +73,9 @@ class RandomTemTAgent(AgentModel):
         self.location_prefix = None
         self.sensory_prefix = None
         self.sensory_key_prefix = None
+
+        self.salience_scores = []
+        self.salience_score_prefix = None
 
         if self.use_cuda:
             torch.cuda.empty_cache()
@@ -153,6 +132,8 @@ class RandomTemTAgent(AgentModel):
         self.sens_loss.append(sensory_error)
         self.displacement_loss.append(displacement_loss)
 
+        self.salience_scores.append(0.01 * sensory_error.item() + math.abs(reward))
+
         position_delta = torch.randn(self.dim) * self.step_size
 
         new_heading = position_delta / torch.norm(position_delta)
@@ -180,7 +161,7 @@ class RandomTemTAgent(AgentModel):
         self.sens_loss = []
         self.displacement_loss = []
 
-        if self.last_location.shape[1] > self.context_window + 1:
+        if self.last_location.shape[1] > self.context_window + self.buffer:
             self.prune()
 
         if self.use_cuda:
@@ -190,47 +171,34 @@ class RandomTemTAgent(AgentModel):
         T = self.last_location.shape[1]
 
         if self.location_prefix is not None:
-            training_locations = torch.cat([self.last_location[0][:-1], self.location_prefix[0]], dim=0)
+            old_locations = torch.cat([self.last_location[0][:-self.buffer], self.location_prefix[0]], dim=0)
         else:
-            training_locations = self.last_location[0][:-1]
+            old_locations = self.last_location[0][:-self.buffer]
         
         if self.sensory_prefix is not None:
-            training_sensory = torch.cat([self.last_sensory[0][:-1], self.sensory_prefix[0]], dim=0)
+            old_sensory = torch.cat([self.last_sensory[0][:-self.buffer], self.sensory_prefix[0]], dim=0)
         else:
-            training_sensory = self.last_sensory[0][:-1]
-        
-        indices = torch.randperm(T-1, device=self.last_location.device)[:self.context_window]
-        locations = training_locations[indices]
-        sensory = training_sensory[indices]
-        pruner = Pruner(locations[None, ...], sensory[None, ...], self.tem, self.context_window, self.tem.location_dim, self.tem.sensory_dim)
-        opt = torch.optim.Adam(pruner.parameters(), lr=1e-3)
+            old_sensory = self.last_sensory[0][:-self.buffer]
 
-        pruner.to(self.last_location.device).to(self.last_location.dtype)
+        if self.salience_score_prefix is not None:
+            old_salience_scores = torch.cat([
+                torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device), 
+                self.salience_score_prefix[0]
+            ], dim=0)
+        else:
+            old_salience_scores = torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
 
-        assert len([p for p in pruner.parameters()]) == 2
+        indices = torch.argsort(old_salience_scores, dim=0, descending=True)[:self.context_window]
 
-        for i in range(steps):
-            indices = torch.randperm(T-1, device=self.last_location.device)[:self.context_window]
-            locations = training_locations[indices]
-            sensory = training_sensory[indices]
+        self.location_prefix = old_locations[indices][None, ...]
+        self.sensory_prefix = old_sensory[indices][None, ...]
+        self.sensory_key_prefix = self.tem.make_sensory_keys(self.location_prefix, self.sensory_prefix)[None, ...]
+        self.salience_score_prefix = old_salience_scores[indices][None, ...]
 
-            opt.zero_grad()
-            loss = pruner(locations[None,...], sensory[None,...])
-            loss.backward()
-            opt.step()
-
-            if i % steps == 0:
-                print(f"PRUNING: loss {loss.item()}", end="\r")
-                sys.stdout.flush()
-        
-        print(f"PRUNED: final loss {loss.item()}")
-        self.location_prefix = pruner.location_prefix.data.detach().clone()
-        self.sensory_prefix = pruner.sensory_prefix.data.detach().clone()
-        self.sensory_key_prefix = pruner.make_sensory_keys(self.location_prefix, self.sensory_prefix).detach().clone()
-
-        self.last_location = self.last_location[:, -1:]
-        self.last_sensory = self.last_sensory[:, -1:]
-        self.last_action = self.last_action[-1:]
+        self.last_location = self.last_location[:, -self.buffer:]
+        self.last_sensory = self.last_sensory[:, -self.buffer:]
+        self.last_action = self.last_action[-self.buffer:]
+        self.salience_scores = self.salience_scores[-self.buffer:]
     
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):
