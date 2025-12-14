@@ -42,6 +42,7 @@ class RandomTemTAgent(AgentModel):
         tem_model: TemLocalizer=None,
         step_size: float=5.0,
         lmbda: float=1.0,
+        beta: float=100.0,
         dim: int=2,
         context_window: int=1024
     ):
@@ -66,6 +67,7 @@ class RandomTemTAgent(AgentModel):
         self.step_size = step_size
 
         self.lmbda = lmbda
+        self.beta = beta
         self.dim = dim
 
         self.use_cuda = torch.cuda.is_available()
@@ -86,6 +88,7 @@ class RandomTemTAgent(AgentModel):
         self.loss = []
         self.loc_loss = []
         self.sens_loss = []
+        self.displacement_loss = []
 
         self.last_location = None
         self.last_action = None
@@ -148,6 +151,7 @@ class RandomTemTAgent(AgentModel):
         self.loss.append(sensory_error + self.lmbda * location_disagreement + displacement_loss)
         self.loc_loss.append(location_disagreement)
         self.sens_loss.append(sensory_error)
+        self.displacement_loss.append(displacement_loss)
 
         position_delta = torch.randn(self.dim) * self.step_size
 
@@ -164,7 +168,8 @@ class RandomTemTAgent(AgentModel):
 
     def train(self, epoch: int=None):
         print(f"Epoch {epoch} Step {self.t}: Taking an optimizer step with {len(self.loss)} loss values: {math.sqrt(sum(self.loss) / len(self.loss))}", end="")
-        print(f" loc_loss: {math.sqrt(sum(self.loc_loss) / len(self.loc_loss))} sens_loss: {math.sqrt(sum(self.sens_loss) / len(self.sens_loss))}")
+        print(f" loc_loss: {math.sqrt(sum(self.loc_loss) / len(self.loc_loss))} sens_loss: {math.sqrt(sum(self.sens_loss) / len(self.sens_loss))}", end="")
+        print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss) / len(self.displacement_loss))}")
         sys.stdout.flush()
         self.optimizer.zero_grad()
         (sum(self.loss) / len(self.loss)).backward()
@@ -173,6 +178,7 @@ class RandomTemTAgent(AgentModel):
         self.loss = []
         self.loc_loss = []
         self.sens_loss = []
+        self.displacement_loss = []
 
         if self.last_location.shape[1] > self.context_window + 1:
             self.prune()

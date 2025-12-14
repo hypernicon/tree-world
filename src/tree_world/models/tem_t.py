@@ -196,7 +196,8 @@ class TemTransformerLayer(torch.nn.Module):
 
 
 class GeometricActionDecoder(torch.nn.Module):
-    def __init__(self, location_dim: int, action_dim: int, hidden_dim: int, dropout: float=0.25, physical_dim: int=2, physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
+    def __init__(self, location_dim: int, action_dim: int, hidden_dim: int, dropout: float=0.25, 
+                 physical_dim: int=2, physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
         super().__init__()
         self.location_dim = location_dim
         self.action_dim = action_dim
@@ -221,7 +222,6 @@ class GeometricActionDecoder(torch.nn.Module):
         self.K_dagger = torch.nn.Parameter(K_dagger)
 
         assert self.location_dim % (2 * self.physical_dim) == 0
-
 
     def forward(self, location: torch.Tensor, action: torch.Tensor, eps: float=1e-6, allow_extension: bool=True, regularize: bool=True):
         B, T, D = location.shape
@@ -260,7 +260,8 @@ class GeometricActionDecoder(torch.nn.Module):
 
 class TemLocalizer(torch.nn.Module):
     def __init__(self, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_heads: int=8, 
-                       action_hidden_dim: int=128, dropout: float=0.1, compute_window=1024):
+                       action_hidden_dim: int=128, dropout: float=0.1, compute_window=1024, physical_dim: int=2, 
+                       physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
         super().__init__()
         self.location_dim = location_dim
         self.sensory_dim = sensory_dim
@@ -271,7 +272,9 @@ class TemLocalizer(torch.nn.Module):
         self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, embed_dim, num_heads, dropout)
         self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout)
 
-        self.geometric_action_decoder = GeometricActionDecoder(location_dim, action_dim, action_hidden_dim, dropout)
+        self.geometric_action_decoder = GeometricActionDecoder(
+            location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
+        )
 
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
@@ -311,6 +314,7 @@ class TemLocalizer(torch.nn.Module):
                 sensory_plus_geometric, sensory_plus_geometric, sensory_location,
                 key_prefix=sensory_key_prefix, value_prefix=location_prefix
             )
+            sensory_location = torch.tanh(sensory_location)
 
             location_disagreement = (
                 geometric_location - sensory_location
@@ -339,4 +343,6 @@ class TemLocalizer(torch.nn.Module):
             num_heads=config.num_heads,
             action_hidden_dim=config.action_hidden_dim,
             dropout=config.dropout,
+            physical_dim=config.dim,
+            physical_scale=config.grid_extent,
         )
