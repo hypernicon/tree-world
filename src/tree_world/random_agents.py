@@ -140,7 +140,7 @@ class RandomTemTAgent(AgentModel):
         if torch.torch.is_tensor(sensory_error):
             sensory_error = sensory_error.item()
 
-        self.salience_scores.append(0.01 * sensory_error + math.abs(reward))
+        self.salience_scores.append(0.01 * sensory_error + math.fabs(reward))
         self.rewards.append(reward)
 
         position_delta = torch.randn(self.dim) * self.step_size
