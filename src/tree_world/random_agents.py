@@ -201,7 +201,7 @@ class RandomTemTAgent(AgentModel):
 
         self.location_prefix = old_locations[indices][None, ...]
         self.sensory_prefix = old_sensory[indices][None, ...]
-        self.sensory_key_prefix = self.tem.make_sensory_keys(self.location_prefix, self.sensory_prefix)
+        self.sensory_key_prefix = self.tem.make_sensory_keys(self.location_prefix, self.sensory_prefix).detach()
         self.salience_score_prefix = old_salience_scores[indices][None, ...]
         self.reward_prefix = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)[None, ...]
 
