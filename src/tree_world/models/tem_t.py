@@ -224,10 +224,10 @@ class GeometricActionDecoder(torch.nn.Module):
         self.physical_dim = physical_dim
         self.physical_scale = physical_scale
         self.physical_ratio = physical_ratio
-        self.alphas = torch.nn.Parameter(make_alphas(location_dim, physical_dim, physical_scale, physical_ratio))
+        self.alphas = torch.nn.Buffer(make_alphas(location_dim, physical_dim, physical_scale, physical_ratio))
         lattice_basis, _, K_dagger = make_lattice_basis(self.alphas, physical_dim)
-        self.lattice_basis = torch.nn.Parameter(lattice_basis)
-        self.K_dagger = torch.nn.Parameter(K_dagger)
+        self.lattice_basis = torch.nn.Buffer(lattice_basis)
+        self.K_dagger = torch.nn.Buffer(K_dagger)
 
         assert self.location_dim % (2 * self.physical_dim) == 0
 
@@ -320,7 +320,8 @@ class TemLocalizer(torch.nn.Module):
         for k in range(max_steps):
             sensory_location = self.location_refiner(
                 sensory_plus_geometric, sensory_plus_geometric, sensory_location,
-                key_prefix=sensory_key_prefix, value_prefix=location_prefix
+                key_prefix=sensory_key_prefix, value_prefix=location_prefix,
+                causal=False
             )
             sensory_location = torch.tanh(sensory_location)
 
@@ -342,10 +343,10 @@ class TemLocalizer(torch.nn.Module):
             sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
 
         sensory_predicted = self.sensory_predictor(
-            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, allow_self_attention=False, add_residual=False,
-            key_prefix=location_prefix, value_prefix=sensory_prefix, causal=False
+            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, 
+            allow_self_attention=False, add_residual=False, causal=False
         )
-        sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
+        sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
 
         return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
