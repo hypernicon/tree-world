@@ -206,8 +206,8 @@ class RandomTemTAgent(AgentModel):
         self.reward_prefix = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)[None, ...]
 
         print("AFTER PRUNING:")
-        print(f"rewards: {self.reward_prefix[0].detach().cpu().numpy().tolist()[:100]}")
-        print(f"salience: {self.salience_score_prefix[0].detach().cpu().numpy().tolist()[:100]}")
+        print(f"rewards: {self.reward_prefix[0].detach().cpu().float().numpy().tolist()[:100]}")
+        print(f"salience: {self.salience_score_prefix[0].detach().cpu().float().numpy().tolist()[:100]}")
 
         self.last_location = self.last_location[:, -self.buffer:]
         self.last_sensory = self.last_sensory[:, -self.buffer:]
