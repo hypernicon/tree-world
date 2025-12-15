@@ -15,7 +15,7 @@ class RandomTemTAgent(AgentModel):
         step_size: float=5.0,
         lmbda: float=1.0,
         beta: float=10.0,
-        gamma: float=1.0,
+        gamma: float=10.0,
         dim: int=2,
         context_window: int=768,
         buffer: int=256
@@ -176,6 +176,7 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
         self.displacement_loss = []
+        self.identity_regularization = []
 
         if self.last_location.shape[1] > self.context_window + self.buffer:
             self.prune()
