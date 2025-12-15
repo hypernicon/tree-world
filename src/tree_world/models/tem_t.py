@@ -121,24 +121,29 @@ class TemTransformerFeedForward(torch.nn.Module):
 
 
 class TemTransformerLayer(torch.nn.Module):
-    def __init__(self, key_dim: int, value_dim: int, embed_dim: int, num_heads: int, dropout: float=0.1):
+    def __init__(self, key_dim: int, value_dim: int, embed_dim: int, num_heads: int, dropout: float=0.1, use_ffn: bool=True):
         super().__init__()
         self.key_dim = key_dim
         self.value_dim = value_dim
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dropout = dropout
+        self.use_ffn = use_ffn
 
         self.q_proj = torch.nn.Linear(key_dim, embed_dim, bias=False)
         self.k_proj = torch.nn.Linear(key_dim, embed_dim, bias=False)
         self.v_proj = torch.nn.Linear(value_dim, embed_dim, bias=False)
-        self.v_out = torch.nn.Linear(embed_dim, value_dim, bias=False)
+        self.v_out = torch.nn.Linear(embed_dim, value_dim, bias=not self.use_ffn)
 
         self.attention = torch.nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, bias=False, batch_first=True)
         self.attention_norm = torch.nn.LayerNorm(embed_dim)
 
-        self.feed_forward = TemTransformerFeedForward(value_dim, 4*value_dim, dropout)
-        self.feed_forward_norm = torch.nn.LayerNorm(value_dim)
+        if use_ffn:
+            self.feed_forward = TemTransformerFeedForward(value_dim, 4*value_dim, dropout)
+            self.feed_forward_norm = torch.nn.LayerNorm(value_dim)
+        else:
+            self.feed_forward = None
+            self.feed_forward_norm = None
 
     def forward(
         self, 
@@ -194,16 +199,35 @@ class TemTransformerLayer(torch.nn.Module):
 
         attn_output = self.v_out(attn_output)
 
-        if add_residual:
-            x = orig_value + self.feed_forward_norm(attn_output)
-        else:
-            x = self.feed_forward_norm(attn_output)
+        if self.use_ffn:
+            if add_residual:
+                x = orig_value + self.feed_forward_norm(attn_output)
+            else:
+                x = self.feed_forward_norm(attn_output)
 
-        y = self.feed_forward(x)
-        return y + x
+            y = x + self.feed_forward(x)
+
+        else:
+            if add_residual:
+                y = orig_value + attn_output
+            else:
+                y = attn_output
+
+        return y
     
     def identity_regularization(self, v: torch.Tensor):
-        y = self.feed_forward(self.feed_forward_norm(self.v_out(self.v_proj(v))))
+        if self.use_ffn:
+            y = self.feed_forward(
+                self.feed_forward_norm(
+                    self.v_out(
+                        self.attention_norm(
+                            self.v_proj(v)
+                        )
+                    )
+                )
+            )
+        else:
+            y = self.v_out(self.attention_norm(self.v_proj(v)))
         return torch.linalg.norm(y - v, dim=-1).mean()
 
 
@@ -284,7 +308,7 @@ class TemLocalizer(torch.nn.Module):
         self.dropout = dropout
 
         self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, embed_dim, num_heads, dropout)
-        self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout)
+        self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout, use_ffn=False)
 
         self.geometric_action_decoder = GeometricActionDecoder(
             location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
