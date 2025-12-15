@@ -362,7 +362,7 @@ class TemLocalizer(torch.nn.Module):
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
 
         if self.training:
-            identity_regularization = self.sensory_predictor.identity_regularization(sensory_location)
+            identity_regularization = self.sensory_predictor.identity_regularization(sensory_with_prefix)
         else:
             identity_regularization = 0.0
 
