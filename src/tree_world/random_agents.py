@@ -14,7 +14,8 @@ class RandomTemTAgent(AgentModel):
         tem_model: TemLocalizer=None,
         step_size: float=5.0,
         lmbda: float=1.0,
-        beta: float=100.0,
+        beta: float=10.0,
+        gamma: float=1.0,
         dim: int=2,
         context_window: int=768,
         buffer: int=256
@@ -32,6 +33,7 @@ class RandomTemTAgent(AgentModel):
         self.loss = []
         self.loc_loss = []
         self.sens_loss = []
+        self.identity_regularization = []
 
         self.location_prefix = None
         self.sensory_prefix = None
@@ -41,6 +43,7 @@ class RandomTemTAgent(AgentModel):
 
         self.lmbda = lmbda
         self.beta = beta
+        self.gamma = gamma
         self.dim = dim
 
         self.use_cuda = torch.cuda.is_available()
@@ -68,6 +71,7 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
         self.displacement_loss = []
+        self.identity_regularization = []
 
         self.last_location = None
         self.last_action = None
@@ -112,7 +116,7 @@ class RandomTemTAgent(AgentModel):
             if last_action is not None:
                 last_action = last_action.to("cuda").to(self.dtype)
 
-        next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement, displacement_loss = (
+        next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement, displacement_loss, identity_regularization = (
             self.tem(
                 self.last_sensory, self.last_location, last_action, 
                 location_prefix=self.location_prefix, sensory_prefix=self.sensory_prefix, sensory_key_prefix=self.sensory_key_prefix
@@ -133,10 +137,11 @@ class RandomTemTAgent(AgentModel):
         self.last_location = next_location.detach().requires_grad_()
         self.location_history = sensory_location.detach()
         self.actual_location_history.append(agent_location)
-        self.loss.append(sensory_error + self.lmbda * location_disagreement + displacement_loss)
+        self.loss.append(sensory_error + self.lmbda * location_disagreement + self.beta * displacement_loss + self.gamma * identity_regularization)
         self.loc_loss.append(location_disagreement)
         self.sens_loss.append(sensory_error)
         self.displacement_loss.append(displacement_loss)
+        self.identity_regularization.append(identity_regularization)
 
         if torch.torch.is_tensor(sensory_error):
             sensory_error = sensory_error.item()
@@ -160,7 +165,8 @@ class RandomTemTAgent(AgentModel):
     def train(self, epoch: int=None):
         print(f"Epoch {epoch} Step {self.t}: Taking an optimizer step with {len(self.loss)} loss values: {math.sqrt(sum(self.loss) / len(self.loss))}", end="")
         print(f" loc_loss: {math.sqrt(sum(self.loc_loss) / len(self.loc_loss))} sens_loss: {math.sqrt(sum(self.sens_loss) / len(self.sens_loss))}", end="")
-        print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss) / len(self.displacement_loss))}")
+        print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss) / len(self.displacement_loss))}", end="")
+        print(f" identity_regularization: {math.sqrt(sum(self.identity_regularization) / len(self.identity_regularization))}")
         sys.stdout.flush()
         self.optimizer.zero_grad()
         (sum(self.loss) / len(self.loss)).backward()
@@ -213,10 +219,6 @@ class RandomTemTAgent(AgentModel):
         self.sensory_key_prefix = self.tem.make_sensory_keys(self.location_prefix, self.sensory_prefix).detach()
         self.salience_score_prefix = old_salience_scores[indices][None, ...].detach()
         self.reward_prefix = old_rewards[indices][None, ...].detach()
-
-        print("AFTER PRUNING:")
-        print(f"rewards: {self.reward_prefix[0].detach().cpu().float().numpy().tolist()[:100]}")
-        print(f"salience: {self.salience_score_prefix[0].detach().cpu().float().numpy().tolist()[:100]}")
 
         self.last_location = self.last_location[:, -self.buffer:]
         self.last_sensory = self.last_sensory[:, -self.buffer:]

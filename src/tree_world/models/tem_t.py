@@ -201,6 +201,12 @@ class TemTransformerLayer(torch.nn.Module):
 
         y = self.feed_forward(x)
         return y + x
+    
+    def identity_regularization(self, v: torch.Tensor):
+        y = self.feed_forward(self.feed_forward_norm(self.v_out(self.v_proj(v))))
+        return torch.linalg.norm(y - v, dim=-1).mean()
+
+
 
 
 class GeometricActionDecoder(torch.nn.Module):
@@ -295,7 +301,14 @@ class TemLocalizer(torch.nn.Module):
         B, T, S = sensory.shape
         if prior_location is None:
             initial_location = torch.empty((B, 1, self.location_dim), dtype=sensory.dtype, device=sensory.device).uniform_(-1, 1)
-            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0
+            if self.training:
+                sensory_with_prefix = sensory
+                if sensory_prefix is not None:
+                    sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
+                identity_regularization = self.sensory_predictor.identity_regularization(sensory_with_prefix)
+            else:
+                identity_regularization = 0.0
+            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0, identity_regularization
         
         # These next two ifs let us just supply the previous output location and action sequence, and extend them to the new length
         if prior_location.shape[1] < T:
@@ -348,7 +361,12 @@ class TemLocalizer(torch.nn.Module):
         )
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
 
-        return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
+        if self.training:
+            identity_regularization = self.sensory_predictor.identity_regularization(sensory_location)
+        else:
+            identity_regularization = 0.0
+
+        return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss, identity_regularization
     
     def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
         return sensory + self.position_encoder(location)
