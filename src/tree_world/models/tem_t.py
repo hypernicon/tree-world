@@ -286,9 +286,10 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_dim = sensory_dim
         self.action_dim = action_dim
         self.embed_dim = embed_dim
+        self.num_heads = num_heads
         self.dropout = dropout
 
-        self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, num_heads*location_dim, num_heads, dropout)
+        # self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, num_heads*location_dim, num_heads, dropout)
         # self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout, use_ffn=False)
 
         self.geometric_action_decoder = GeometricActionDecoder(
@@ -328,11 +329,23 @@ class TemLocalizer(torch.nn.Module):
         sensory_location = prior_location
         geometric_location, displacement_loss = self.geometric_action_decoder(prior_location, action, allow_extension=False, regularize=True) # <-- we've already extended the action sequence
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
+        
+        if sensory_key_prefix is not None and location_prefix is not None:
+            sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
+            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
+        else:
+            sensory_plus_geometric_with_prefix = sensory_plus_geometric
+            sensory_location_with_prefix = sensory_location
+
         for k in range(max_steps):
-            sensory_location = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, sensory_location,
-                key_prefix=sensory_key_prefix, value_prefix=location_prefix,
-                causal=False
+            # sensory_location = self.location_refiner(
+            #     sensory_plus_geometric, sensory_plus_geometric_with_prefix, sensory_location_with_prefix,
+            #     key_prefix=sensory_key_prefix, value_prefix=location_prefix,
+            #     causal=False
+            #)
+            sensory_location = scaled_dot_product_attention(
+                sensory_plus_geometric_with_prefix, sensory_plus_geometric_with_prefix, sensory_location_with_prefix, 
+                attn_mask=mask, num_heads=self.num_heads
             )
             sensory_location = torch.tanh(sensory_location)
 
