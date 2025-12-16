@@ -101,7 +101,7 @@ def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: 
     key = key.view(key.shape[0], key.shape[1], num_heads, -1).transpose(1, 2)
     value = value.view(value.shape[0], value.shape[1], num_heads, -1).transpose(1, 2)
     result = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
-    result = result.transpose(1, 2).view(B, T, -1)
+    result = result.transpose(1, 2).reshape(B, T, -1)
     return result
 
 
@@ -331,8 +331,8 @@ class TemLocalizer(torch.nn.Module):
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
         
         if sensory_key_prefix is not None and location_prefix is not None:
-            sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1).contiguous()
-            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1).contiguous()
+            sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
+            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
         else:
             sensory_plus_geometric_with_prefix = sensory_plus_geometric
             sensory_location_with_prefix = sensory_location
