@@ -361,7 +361,7 @@ class TemLocalizer(torch.nn.Module):
         S = sensory_location_with_prefix.shape[1]
         mask = torch.zeros((S, S), dtype=sensory.dtype, device=sensory.device).masked_fill(I, float('-inf'))
         sensory_predicted = scaled_dot_product_attention(
-            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, attn_mask=mask, num_heads=self.num_heads
+            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, attn_mask=mask, num_heads=1
         )
 
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
