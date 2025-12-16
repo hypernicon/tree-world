@@ -121,32 +121,23 @@ class TemTransformerFeedForward(torch.nn.Module):
 
 
 class TemTransformerLayer(torch.nn.Module):
-    def __init__(self, key_dim: int, value_dim: int, embed_dim: int, num_heads: int, dropout: float=0.1, use_ffn: bool=True):
+    def __init__(self, key_dim: int, value_dim: int, embed_dim: int, num_heads: int, dropout: float=0.1):
         super().__init__()
         self.key_dim = key_dim
         self.value_dim = value_dim
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dropout = dropout
-        self.use_ffn = use_ffn
 
         self.q_proj = torch.nn.Linear(key_dim, embed_dim, bias=False)
         self.k_proj = torch.nn.Linear(key_dim, embed_dim, bias=False)
         self.v_proj = torch.nn.Linear(value_dim, embed_dim, bias=False)
-        self.v_out = torch.nn.Linear(embed_dim, value_dim, bias=not self.use_ffn)
+        self.v_out = torch.nn.Linear(embed_dim, value_dim, bias=False)
 
-        self.attention = torch.nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, bias=False, batch_first=True)
-        if self.use_ffn:
-            self.attention_norm = torch.nn.LayerNorm(embed_dim)
-        else:
-            self.attention_norm = None
+        self.attention_norm = torch.nn.LayerNorm(embed_dim)
 
-        if use_ffn:
-            self.feed_forward = TemTransformerFeedForward(value_dim, 4*value_dim, dropout)
-            self.feed_forward_norm = torch.nn.LayerNorm(value_dim)
-        else:
-            self.feed_forward = None
-            self.feed_forward_norm = None
+        self.feed_forward = TemTransformerFeedForward(value_dim, 4*value_dim, dropout)
+        self.feed_forward_norm = torch.nn.LayerNorm(value_dim)
 
     def forward(
         self, 
@@ -171,8 +162,7 @@ class TemTransformerLayer(torch.nn.Module):
         key = self.k_proj(key)
         value_p = self.v_proj(value)
 
-        if self.use_ffn:
-            value_p = self.attention_norm(value_p)
+        value_p = self.attention_norm(value_p)
 
         if mask is None:
             if causal:
@@ -194,7 +184,7 @@ class TemTransformerLayer(torch.nn.Module):
                 mask = torch.zeros((query.shape[1], key.shape[1]), dtype=query.dtype, device=query.device)
                 mask = mask.masked_fill(I, float('-inf'))
 
-        attn_output, attn_output_weights = self.attention(query, key, value_p, attn_mask=mask)
+        attn_output = torch.nn.functional.scaled_dot_product_attention(query, key, value_p, attn_mask=mask)
 
         if causal and not allow_self_attention: # non-causal no self-attention doesn't have the NaN problem
             attn_output[:, 0, :] = torch.zeros_like(attn_output[:, 0, :])
@@ -203,38 +193,14 @@ class TemTransformerLayer(torch.nn.Module):
 
         attn_output = self.v_out(attn_output)
 
-        if self.use_ffn:
-            if add_residual:
-                x = orig_value + self.feed_forward_norm(attn_output)
-            else:
-                x = self.feed_forward_norm(attn_output)
-
-            y = x + self.feed_forward(x)
-
+        if add_residual:
+            x = orig_value + self.feed_forward_norm(attn_output)
         else:
-            if add_residual:
-                y = orig_value + attn_output
-            else:
-                y = attn_output
+            x = self.feed_forward_norm(attn_output)
+
+        y = x + self.feed_forward(x)
 
         return y
-    
-    def identity_regularization(self, v: torch.Tensor):
-        if self.use_ffn:
-            y = self.feed_forward(
-                self.feed_forward_norm(
-                    self.v_out(
-                        self.attention_norm(
-                            self.v_proj(v)
-                        )
-                    )
-                )
-            )
-        else:
-            y = self.v_out(self.v_proj(v))
-        return torch.linalg.norm(y - v, dim=-1).mean()
-
-
 
 
 class GeometricActionDecoder(torch.nn.Module):
@@ -312,7 +278,7 @@ class TemLocalizer(torch.nn.Module):
         self.dropout = dropout
 
         self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, embed_dim, num_heads, dropout)
-        self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout, use_ffn=False)
+        # self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout, use_ffn=False)
 
         self.geometric_action_decoder = GeometricActionDecoder(
             location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
@@ -329,14 +295,7 @@ class TemLocalizer(torch.nn.Module):
         B, T, S = sensory.shape
         if prior_location is None:
             initial_location = torch.empty((B, 1, self.location_dim), dtype=sensory.dtype, device=sensory.device).uniform_(-1, 1)
-            if self.training:
-                sensory_with_prefix = sensory
-                if sensory_prefix is not None:
-                    sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
-                identity_regularization = self.sensory_predictor.identity_regularization(sensory_with_prefix)
-            else:
-                identity_regularization = 0.0
-            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0, identity_regularization
+            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0
         
         # These next two ifs let us just supply the previous output location and action sequence, and extend them to the new length
         if prior_location.shape[1] < T:
@@ -383,18 +342,19 @@ class TemLocalizer(torch.nn.Module):
             sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
             sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
 
-        sensory_predicted = self.sensory_predictor(
-            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, 
-            allow_self_attention=False, add_residual=False, causal=False
+        # sensory_predicted = self.sensory_predictor(
+        #    sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, 
+        #    allow_self_attention=False, add_residual=False, causal=False
+        #)
+        I = torch.eye(T, dtype=torch.bool, device=sensory_location_with_prefix.device)
+        mask = torch.zeros((T, T), dtype=sensory.dtype, device=sensory.device).masked_fill(I, float('-inf'))
+        sensory_predicted = torch.nn.functional.scaled_dot_product_attention(
+            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, attn_mask=mask
         )
+
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
 
-        if self.training:
-            identity_regularization = self.sensory_predictor.identity_regularization(sensory_with_prefix)
-        else:
-            identity_regularization = 0.0
-
-        return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss, identity_regularization
+        return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
     def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
         return sensory + self.position_encoder(location)

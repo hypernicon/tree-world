@@ -15,7 +15,6 @@ class RandomTemTAgent(AgentModel):
         step_size: float=5.0,
         lmbda: float=1.0,
         beta: float=10.0,
-        gamma: float=10.0,
         dim: int=2,
         context_window: int=768,
         buffer: int=256
@@ -33,7 +32,6 @@ class RandomTemTAgent(AgentModel):
         self.loss = []
         self.loc_loss = []
         self.sens_loss = []
-        self.identity_regularization = []
 
         self.location_prefix = None
         self.sensory_prefix = None
@@ -43,7 +41,6 @@ class RandomTemTAgent(AgentModel):
 
         self.lmbda = lmbda
         self.beta = beta
-        self.gamma = gamma
         self.dim = dim
 
         self.use_cuda = torch.cuda.is_available()
@@ -71,7 +68,6 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
         self.displacement_loss = []
-        self.identity_regularization = []
 
         self.last_location = None
         self.last_action = None
@@ -116,7 +112,7 @@ class RandomTemTAgent(AgentModel):
             if last_action is not None:
                 last_action = last_action.to("cuda").to(self.dtype)
 
-        next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement, displacement_loss, identity_regularization = (
+        next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
                 self.last_sensory, self.last_location, last_action, 
                 location_prefix=self.location_prefix, sensory_prefix=self.sensory_prefix, sensory_key_prefix=self.sensory_key_prefix
@@ -137,11 +133,10 @@ class RandomTemTAgent(AgentModel):
         self.last_location = next_location.detach().requires_grad_()
         self.location_history = sensory_location.detach()
         self.actual_location_history.append(agent_location)
-        self.loss.append(sensory_error + self.lmbda * location_disagreement + self.beta * displacement_loss + self.gamma * identity_regularization)
+        self.loss.append(sensory_error + self.lmbda * location_disagreement + self.beta * displacement_loss)
         self.loc_loss.append(location_disagreement)
         self.sens_loss.append(sensory_error)
         self.displacement_loss.append(displacement_loss)
-        self.identity_regularization.append(identity_regularization)
 
         if torch.torch.is_tensor(sensory_error):
             sensory_error = sensory_error.item()
@@ -166,7 +161,6 @@ class RandomTemTAgent(AgentModel):
         print(f"Epoch {epoch} Step {self.t}: Taking an optimizer step with {len(self.loss)} loss values: {math.sqrt(sum(self.loss) / len(self.loss))}", end="")
         print(f" loc_loss: {math.sqrt(sum(self.loc_loss) / len(self.loc_loss))} sens_loss: {math.sqrt(sum(self.sens_loss) / len(self.sens_loss))}", end="")
         print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss) / len(self.displacement_loss))}", end="")
-        print(f" identity_regularization: {math.sqrt(sum(self.identity_regularization) / len(self.identity_regularization))}")
         sys.stdout.flush()
         self.optimizer.zero_grad()
         (sum(self.loss) / len(self.loss)).backward()
@@ -176,7 +170,6 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
         self.displacement_loss = []
-        self.identity_regularization = []
 
         if self.last_location.shape[1] > self.context_window + self.buffer:
             self.prune()
