@@ -136,7 +136,10 @@ class TemTransformerLayer(torch.nn.Module):
         self.v_out = torch.nn.Linear(embed_dim, value_dim, bias=not self.use_ffn)
 
         self.attention = torch.nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, bias=False, batch_first=True)
-        self.attention_norm = torch.nn.LayerNorm(embed_dim)
+        if self.use_ffn:
+            self.attention_norm = torch.nn.LayerNorm(embed_dim)
+        else:
+            self.attention_norm = None
 
         if use_ffn:
             self.feed_forward = TemTransformerFeedForward(value_dim, 4*value_dim, dropout)
@@ -168,7 +171,8 @@ class TemTransformerLayer(torch.nn.Module):
         key = self.k_proj(key)
         value_p = self.v_proj(value)
 
-        value_p = self.attention_norm(value_p)
+        if self.use_ffn:
+            value_p = self.attention_norm(value_p)
 
         if mask is None:
             if causal:
@@ -227,7 +231,7 @@ class TemTransformerLayer(torch.nn.Module):
                 )
             )
         else:
-            y = self.v_out(self.attention_norm(self.v_proj(v)))
+            y = self.v_out(self.v_proj(v))
         return torch.linalg.norm(y - v, dim=-1).mean()
 
 
