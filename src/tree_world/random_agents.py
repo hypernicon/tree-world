@@ -160,7 +160,7 @@ class RandomTemTAgent(AgentModel):
     def train(self, epoch: int=None):
         print(f"Epoch {epoch} Step {self.t}: Taking an optimizer step with {len(self.loss)} loss values: {math.sqrt(sum(self.loss) / len(self.loss))}", end="")
         print(f" loc_loss: {math.sqrt(sum(self.loc_loss) / len(self.loc_loss))} sens_loss: {math.sqrt(sum(self.sens_loss) / len(self.sens_loss))}", end="")
-        print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss) / len(self.displacement_loss))}", end="")
+        print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss) / len(self.displacement_loss))}")
         sys.stdout.flush()
         self.optimizer.zero_grad()
         (sum(self.loss) / len(self.loss)).backward()
