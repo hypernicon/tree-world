@@ -345,7 +345,7 @@ class TemLocalizer(torch.nn.Module):
             #)
             sensory_location = scaled_dot_product_attention(
                 sensory_plus_geometric, sensory_plus_geometric_with_prefix, sensory_location_with_prefix, 
-                attn_mask=mask, num_heads=self.num_heads
+                attn_mask=None, num_heads=self.num_heads
             )
             sensory_location = torch.tanh(sensory_location)
 
