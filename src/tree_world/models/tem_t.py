@@ -96,12 +96,14 @@ def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_
 
 def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attn_mask: Optional[torch.Tensor]=None, num_heads: int=1):
     # Convert our inputs, which are (batch_size, time_steps, embed_dim) to (batch_size, num_heads, time_steps, head_dim)
+    B, T, _ = query.shape
     print(f"SDPA query shape: {query.shape} key shape: {key.shape} value shape: {value.shape}")
     query = query.view(query.shape[0], query.shape[1], num_heads, -1).transpose(1, 2)
     key = key.view(key.shape[0], key.shape[1], num_heads, -1).transpose(1, 2)
     value = value.view(value.shape[0], value.shape[1], num_heads, -1).transpose(1, 2)
     result = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
-    result = result.transpose(1, 2).view(result.shape[0], result.shape[1], -1)
+    print(f"SDPA initial result shape: {result.shape}")
+    result = result.transpose(1, 2).view(B, T, -1)
     print(f"SDPA result shape: {result.shape}")
     return result
 
