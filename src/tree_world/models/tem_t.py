@@ -357,8 +357,8 @@ class TemLocalizer(torch.nn.Module):
         #    sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, 
         #    allow_self_attention=False, add_residual=False, causal=False
         #)
-        I = torch.eye(T, dtype=torch.bool, device=sensory_location_with_prefix.device)
         S = sensory_location_with_prefix.shape[1]
+        I = torch.eye(S, dtype=torch.bool, device=sensory_location_with_prefix.device)
         mask = torch.zeros((S, S), dtype=sensory.dtype, device=sensory.device).masked_fill(I, float('-inf'))
         sensory_predicted = scaled_dot_product_attention(
             sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, attn_mask=mask, num_heads=1
