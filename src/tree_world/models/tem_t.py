@@ -94,6 +94,16 @@ def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_
     return deltas.var(dim=-2).mean()
 
 
+def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attn_mask: Optional[torch.Tensor]=None, num_heads: int=1):
+    # Convert our inputs, which are (batch_size, time_steps, embed_dim) to (batch_size, num_heads, time_steps, head_dim)
+    query = query.view(query.shape[0], query.shape[1], num_heads, -1).transpose(1, 2)
+    key = key.view(key.shape[0], key.shape[1], num_heads, -1).transpose(1, 2)
+    value = value.view(value.shape[0], value.shape[1], num_heads, -1).transpose(1, 2)
+    result = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
+    result = result.transpose(1, 2).view(result.shape[0], result.shape[1], -1)
+    return result
+
+
 class TemTransformerFeedForward(torch.nn.Module):
     def __init__(self, embed_dim: int, hidden_dim: int, dropout: float=0.1):
         super().__init__()
@@ -184,7 +194,7 @@ class TemTransformerLayer(torch.nn.Module):
                 mask = torch.zeros((query.shape[1], key.shape[1]), dtype=query.dtype, device=query.device)
                 mask = mask.masked_fill(I, float('-inf'))
 
-        attn_output = torch.nn.functional.scaled_dot_product_attention(query, key, value_p, attn_mask=mask)
+        attn_output = scaled_dot_product_attention(query, key, value_p, attn_mask=mask, num_heads=self.num_heads)
 
         if causal and not allow_self_attention: # non-causal no self-attention doesn't have the NaN problem
             attn_output[:, 0, :] = torch.zeros_like(attn_output[:, 0, :])
@@ -348,8 +358,8 @@ class TemLocalizer(torch.nn.Module):
         #)
         I = torch.eye(T, dtype=torch.bool, device=sensory_location_with_prefix.device)
         mask = torch.zeros((T, T), dtype=sensory.dtype, device=sensory.device).masked_fill(I, float('-inf'))
-        sensory_predicted = torch.nn.functional.scaled_dot_product_attention(
-            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, attn_mask=mask
+        sensory_predicted = scaled_dot_product_attention(
+            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, attn_mask=mask, num_heads=1
         )
 
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)

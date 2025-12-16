@@ -177,7 +177,7 @@ class RandomTemTAgent(AgentModel):
         if self.use_cuda:
             torch.cuda.empty_cache()
     
-    def prune(self, steps=10000):
+    def prune(self):
         T = self.last_location.shape[1]
 
         if self.location_prefix is not None:
