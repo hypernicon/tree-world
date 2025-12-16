@@ -57,7 +57,7 @@ class TreeWorldConfig:
     embed_dim: int = 1024
     dropout: float = 0.1
     num_guesses: int = 5
-    num_heads: int = 8
+    num_heads: int = 4
     action_hidden_dim: int = 128
 
     # Sensor

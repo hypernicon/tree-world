@@ -97,14 +97,11 @@ def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_
 def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attn_mask: Optional[torch.Tensor]=None, num_heads: int=1):
     # Convert our inputs, which are (batch_size, time_steps, embed_dim) to (batch_size, num_heads, time_steps, head_dim)
     B, T, _ = query.shape
-    print(f"SDPA query shape: {query.shape} key shape: {key.shape} value shape: {value.shape}")
     query = query.view(query.shape[0], query.shape[1], num_heads, -1).transpose(1, 2)
     key = key.view(key.shape[0], key.shape[1], num_heads, -1).transpose(1, 2)
     value = value.view(value.shape[0], value.shape[1], num_heads, -1).transpose(1, 2)
     result = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
-    print(f"SDPA initial result shape: {result.shape}")
     result = result.transpose(1, 2).view(B, T, -1)
-    print(f"SDPA result shape: {result.shape}")
     return result
 
 
@@ -281,7 +278,7 @@ class GeometricActionDecoder(torch.nn.Module):
 
 
 class TemLocalizer(torch.nn.Module):
-    def __init__(self, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_heads: int=8, 
+    def __init__(self, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_heads: int=4, 
                        action_hidden_dim: int=128, dropout: float=0.1, compute_window=1024, physical_dim: int=2, 
                        physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
         super().__init__()
@@ -291,7 +288,7 @@ class TemLocalizer(torch.nn.Module):
         self.embed_dim = embed_dim
         self.dropout = dropout
 
-        self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, embed_dim, num_heads, dropout)
+        self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, num_heads*location_dim, num_heads, dropout)
         # self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout, use_ffn=False)
 
         self.geometric_action_decoder = GeometricActionDecoder(
