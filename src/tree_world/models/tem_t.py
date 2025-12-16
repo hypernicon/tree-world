@@ -331,8 +331,8 @@ class TemLocalizer(torch.nn.Module):
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
         
         if sensory_key_prefix is not None and location_prefix is not None:
-            sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
-            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
+            sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1).contiguous()
+            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1).contiguous()
         else:
             sensory_plus_geometric_with_prefix = sensory_plus_geometric
             sensory_location_with_prefix = sensory_location
