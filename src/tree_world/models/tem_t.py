@@ -224,12 +224,13 @@ class GeometricActionDecoder(torch.nn.Module):
         self.dropout = dropout
         assert location_dim % 2 == 0
 
-        # self.action_mlp = torch.nn.Sequential(
-        #    torch.nn.LayerNorm(hidden_dim),
-        #    torch.nn.ReLU(),
-        #    torch.nn.Dropout(dropout),
-        #    torch.nn.Linear(hidden_dim, location_dim // 2),
-        #)
+        self.action_mlp = torch.nn.Sequential(
+            torch.nn.Linear(action_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, location_dim // 2),
+        )
 
         self.physical_dim = physical_dim
         self.physical_scale = physical_scale
@@ -248,9 +249,9 @@ class GeometricActionDecoder(torch.nn.Module):
         assert (B, T, self.action_dim) == action.shape
 
         # use a block diagonal matrix to rotate the location
-        # thetas = self.action_mlp(action)
-        thetas = self.alphas[None, None, :, None] * ((self.K[None, None, ...] @ action[..., None]).view(B, T, -1, self.physical_dim + 1)) 
-        thetas = thetas.view(B, T, -1)
+        thetas = self.action_mlp(action)
+        # thetas = self.alphas[None, None, :, None] * ((self.K[None, None, ...] @ action[..., None]).view(B, T, -1, self.physical_dim + 1)) 
+        # thetas = thetas.view(B, T, -1)
         cos_thetas = torch.cos(thetas)
         sin_thetas = torch.sin(thetas)
 
