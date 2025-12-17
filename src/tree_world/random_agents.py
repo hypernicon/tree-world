@@ -14,7 +14,7 @@ class RandomTemTAgent(AgentModel):
         tem_model: TemLocalizer=None,
         step_size: float=5.0,
         lmbda: float=1.0,
-        beta: float=10.0,
+        beta: float=1.0,
         dim: int=2,
         context_window: int=768,
         buffer: int=256
