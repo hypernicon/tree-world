@@ -224,21 +224,21 @@ class GeometricActionDecoder(torch.nn.Module):
         self.dropout = dropout
         assert location_dim % 2 == 0
 
-        self.action_mlp = torch.nn.Sequential(
-            torch.nn.Linear(action_dim, hidden_dim),
-            torch.nn.LayerNorm(hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Dropout(dropout),
-            torch.nn.Linear(hidden_dim, location_dim // 2),
-        )
+        # self.action_mlp = torch.nn.Sequential(
+        #    torch.nn.LayerNorm(hidden_dim),
+        #    torch.nn.ReLU(),
+        #    torch.nn.Dropout(dropout),
+        #    torch.nn.Linear(hidden_dim, location_dim // 2),
+        #)
 
         self.physical_dim = physical_dim
         self.physical_scale = physical_scale
         self.physical_ratio = physical_ratio
         self.alphas = torch.nn.Buffer(make_alphas(location_dim, physical_dim, physical_scale, physical_ratio))
-        lattice_basis, _, K_dagger = make_lattice_basis(self.alphas, physical_dim)
+        lattice_basis, K, K_dagger = make_lattice_basis(self.alphas, physical_dim)
         self.lattice_basis = torch.nn.Buffer(lattice_basis)
         self.K_dagger = torch.nn.Buffer(K_dagger)
+        self.K = torch.nn.Buffer(K)
 
         assert self.location_dim % (2 * self.physical_dim) == 0
 
@@ -248,7 +248,9 @@ class GeometricActionDecoder(torch.nn.Module):
         assert (B, T, self.action_dim) == action.shape
 
         # use a block diagonal matrix to rotate the location
-        thetas = self.action_mlp(action)
+        # thetas = self.action_mlp(action)
+        thetas = self.alphas[None, None, :, None] * ((self.K[None, None, ...] @ action[..., None]).view(B, T, -1, self.physical_dim + 1)) 
+        thetas = thetas.view(B, T, -1)
         cos_thetas = torch.cos(thetas)
         sin_thetas = torch.sin(thetas)
 
@@ -276,7 +278,6 @@ class GeometricActionDecoder(torch.nn.Module):
             return next_location
 
 
-
 class TemLocalizer(torch.nn.Module):
     def __init__(self, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_heads: int=4, 
                        action_hidden_dim: int=128, dropout: float=0.1, compute_window=1024, physical_dim: int=2, 
@@ -289,7 +290,7 @@ class TemLocalizer(torch.nn.Module):
         self.num_heads = num_heads
         self.dropout = dropout
 
-        # self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, num_heads*location_dim, num_heads, dropout)
+        self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, num_heads*location_dim, num_heads, dropout)
         # self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout, use_ffn=False)
 
         self.geometric_action_decoder = GeometricActionDecoder(
@@ -330,23 +331,23 @@ class TemLocalizer(torch.nn.Module):
         geometric_location, displacement_loss = self.geometric_action_decoder(prior_location, action, allow_extension=False, regularize=True) # <-- we've already extended the action sequence
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
         
-        if sensory_key_prefix is not None and location_prefix is not None:
-            sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
-            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
-        else:
-            sensory_plus_geometric_with_prefix = sensory_plus_geometric
-            sensory_location_with_prefix = sensory_location
+        # if sensory_key_prefix is not None and location_prefix is not None:
+        #     sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
+        #     sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
+        # else:
+        #     sensory_plus_geometric_with_prefix = sensory_plus_geometric
+        #     sensory_location_with_prefix = sensory_location
 
         for k in range(max_steps):
-            # sensory_location = self.location_refiner(
-            #     sensory_plus_geometric, sensory_plus_geometric_with_prefix, sensory_location_with_prefix,
-            #     key_prefix=sensory_key_prefix, value_prefix=location_prefix,
-            #     causal=False
-            #)
-            sensory_location = scaled_dot_product_attention(
-                sensory_plus_geometric, sensory_plus_geometric_with_prefix, sensory_location_with_prefix, 
-                attn_mask=None, num_heads=self.num_heads
+            sensory_location = self.location_refiner(
+                sensory_plus_geometric, sensory_plus_geometric, sensory_location,
+                key_prefix=sensory_key_prefix, value_prefix=location_prefix,
+                causal=False
             )
+            # sensory_location = scaled_dot_product_attention(
+            #     sensory_plus_geometric, sensory_plus_geometric_with_prefix, sensory_location_with_prefix, 
+            #     attn_mask=None, num_heads=self.num_heads
+            # )
             sensory_location = torch.tanh(sensory_location)
 
             location_disagreement = (
