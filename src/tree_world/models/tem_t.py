@@ -250,6 +250,8 @@ class GeometricActionDecoder(torch.nn.Module):
 
         # use a block diagonal matrix to rotate the location
         thetas = self.action_mlp(action)
+
+        # if we wanted to be explicit (since our actions are actually displacements in physical space), we could do this:
         # thetas = self.alphas[None, None, :, None] * ((self.K[None, None, ...] @ action[..., None]).view(B, T, -1, self.physical_dim + 1)) 
         # thetas = thetas.view(B, T, -1)
         cos_thetas = torch.cos(thetas)
@@ -332,23 +334,23 @@ class TemLocalizer(torch.nn.Module):
         geometric_location, displacement_loss = self.geometric_action_decoder(prior_location, action, allow_extension=False, regularize=True) # <-- we've already extended the action sequence
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
         
-        # if sensory_key_prefix is not None and location_prefix is not None:
-        #     sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
-        #     sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
-        # else:
-        #     sensory_plus_geometric_with_prefix = sensory_plus_geometric
-        #     sensory_location_with_prefix = sensory_location
+        if sensory_key_prefix is not None and location_prefix is not None:
+            sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
+            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
+        else:
+            sensory_plus_geometric_with_prefix = sensory_plus_geometric
+            sensory_location_with_prefix = sensory_location
 
         for k in range(max_steps):
-            sensory_location = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, sensory_location,
-                key_prefix=sensory_key_prefix, value_prefix=location_prefix,
-                causal=False
-            )
-            # sensory_location = scaled_dot_product_attention(
-            #     sensory_plus_geometric, sensory_plus_geometric_with_prefix, sensory_location_with_prefix, 
-            #     attn_mask=None, num_heads=self.num_heads
+            # sensory_location = self.location_refiner(
+            #     sensory_plus_geometric, sensory_plus_geometric, sensory_location,
+            #     key_prefix=sensory_key_prefix, value_prefix=location_prefix,
+            #    causal=False
             # )
+            sensory_location = scaled_dot_product_attention(
+                sensory_plus_geometric, sensory_plus_geometric_with_prefix, sensory_location_with_prefix, 
+                attn_mask=None, num_heads=self.num_heads
+            )
             sensory_location = torch.tanh(sensory_location)
 
             location_disagreement = (
@@ -358,7 +360,7 @@ class TemLocalizer(torch.nn.Module):
             if (location_disagreement < threshold).all():
                 break
 
-            sensory_location = (1 - refine_alpha) * sensory_location + refine_alpha * geometric_location.detach()
+            # sensory_location = (1 - refine_alpha) * sensory_location + refine_alpha * geometric_location.detach()
 
         # train the sensory predictor on the prefix too, if present
         # the prefix is all prior salient info, so this should be prioritized in training.
