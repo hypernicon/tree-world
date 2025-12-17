@@ -363,28 +363,30 @@ class TemLocalizer(torch.nn.Module):
 
             # sensory_location = (1 - refine_alpha) * sensory_location + refine_alpha * geometric_location.detach()
 
+        next_location = 0.5 * (geometric_location + sensory_location)
+
         # train the sensory predictor on the prefix too, if present
         # the prefix is all prior salient info, so this should be prioritized in training.
-        sensory_location_with_prefix = sensory_location
+        next_location_with_prefix = next_location
         sensory_with_prefix = sensory
         if sensory_prefix is not None and location_prefix is not None:
-            sensory_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
+            next_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
             sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
 
         # sensory_predicted = self.sensory_predictor(
         #    sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, 
         #    allow_self_attention=False, add_residual=False, causal=False
         #)
-        S = sensory_location_with_prefix.shape[1]
-        I = torch.eye(S, dtype=torch.bool, device=sensory_location_with_prefix.device)
+        S = next_location_with_prefix.shape[1]
+        I = torch.eye(S, dtype=torch.bool, device=next_location_with_prefix.device)
         mask = torch.zeros((S, S), dtype=sensory.dtype, device=sensory.device).masked_fill(I, float('-inf'))
         sensory_predicted = scaled_dot_product_attention(
-            sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, attn_mask=mask, num_heads=1
+            next_location_with_prefix, next_location_with_prefix, sensory_with_prefix, attn_mask=mask, num_heads=1
         )
 
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
 
-        return geometric_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
+        return next_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
     def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
         return sensory + self.position_encoder(location)
