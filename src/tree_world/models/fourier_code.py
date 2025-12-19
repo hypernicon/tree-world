@@ -24,65 +24,45 @@ class LocationMetric(torch.nn.Module):
         self.K_dagger = torch.nn.Buffer(K_dagger)
     
         if metric_rank is not None:
-            self.metric_rank = metric_rank
+            self.metric_rank = min(location_dim, metric_rank)
         else:
             self.metric_rank = location_dim
 
-        self.square = self.location_dim == self.metric_rank
-        if self.square:   
-            # TODO: set initial values to reflect alphas and K
-            self.metric = torch.nn.Linear(location_dim, location_dim, bias=False)
-        
-        else:
-            self.metric_q = torch.nn.Linear(location_dim, metric_rank, bias=False)
-            self.metric_k = torch.nn.Linear(metric_rank, location_dim, bias=False)
+        self.metric = torch.nn.Linear(self.location_dim, self.metric_rank, bias=False)
 
         self.scale_factor = self.metric_rank ** -0.5
         
-    def square_affinity_2d(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
-        assert self.square, "square_affinity is only supported for square metrics"
-        if prepared_k:
-            return (location1 * location2).sum(dim=-1)
-        else:
-            return (location1 * self.metric(location2)).sum(dim=-1)
-
-    def low_rank_affinity_2d(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
+    def affinity_2d(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
         assert not self.square, "low_rank_affinity is only supported for low-rank metrics"
         if prepared_k:
-            return (self.metric_q(location1) * location2).sum(dim=-1)
+            return (self.metric(location1) * location2).sum(dim=-1)
         else:
-            return (self.metric_q(location1) * self.metric_k(location2)).sum(dim=-1)
+            return (self.metric(location1) * self.metric(location2)).sum(dim=-1)
     
-    def square_affinity_nd(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
-        assert self.square, "square_affinity is only supported for square metrics"
-        if prepared_k:
-            return torch.bmm(location1, location2.transpose(-2, -1)).sum(dim=-1)
-        else:
-            return torch.bmm(location1, self.metric(location2).transpose(-2, -1)).sum(dim=-1)
-    
-    def low_rank_affinity_nd(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
+    def affinity_nd(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
         assert not self.square, "low_rank_affinity is only supported for low-rank metrics"
         if prepared_k:
-            return torch.bmm(self.metric_q(location1), location2.transpose(-2, -1)).sum(dim=-1)
+            return torch.bmm(self.metric(location1), location2.transpose(-2, -1)).sum(dim=-1)
         else:
-            return torch.bmm(self.metric_q(location1), self.metric_k(location2).transpose(-2, -1)).sum(dim=-1)
+            return torch.bmm(self.metric(location1), self.metric(location2).transpose(-2, -1)).sum(dim=-1)
     
     def log_affinity(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False, scale_by_operator_norm: bool=True):
-        if self.square:
-            if location2.ndim == 2:
-                base = self.square_affinity_2d(location1, location2, prepared_k)
-            else:
-                base = self.square_affinity_nd(location1, location2, prepared_k)
+        if location2.ndim == 2:
+            base = self.low_rank_affinity_2d(location1, location2, prepared_k)
         else:
-            if location2.ndim == 2:
-                base = self.low_rank_affinity_2d(location1, location2, prepared_k)
-            else:
-                base = self.low_rank_affinity_nd(location1, location2, prepared_k)
+            base = self.low_rank_affinity_nd(location1, location2, prepared_k)
 
         if scale_by_operator_norm:
             base = base / (self.metric_operator_norm() + 1e-8)
 
         return self.scale_factor * base
+
+    def psuedo_distance(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
+        if prepared_k:
+            diff = self.metric(location1) - location2
+        else:
+            diff = self.metric(location1 - location2)
+        return torch.norm(diff, dim=-1)
         
     def prepare_k(self, location: torch.Tensor):
         if self.square:
