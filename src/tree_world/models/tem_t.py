@@ -133,6 +133,47 @@ class TemTransformerLayer(torch.nn.Module):
         return y
 
 
+class SensoryPredictor(torch.nn.Module):
+    def __init__(self, metric: LocationMetric, location_dim: int):
+        super().__init__()
+        self.metric = metric
+        self.location_dim = location_dim
+        self.scale_factor = location_dim ** -0.5
+    
+    def forward(self, location: torch.Tensor, sensory: torch.Tensor, max_distance: float=0.25):
+
+        # locations have shape (batch_size, time_steps, location_dim)
+        # sensory has shape (batch_size, time_steps, sensory_dim)
+        B, T, D = location.shape
+        assert D == self.location_dim
+        assert (B, T, self.sensory_dim) == sensory.shape
+
+        location_k = self.metric.prepare_k(location)
+        location_q = self.metric.prepare_q(location)
+
+
+        # location_distances has shape (batch_size, time_steps, time_steps)
+        location_distances = torch.cdist(location_q, location_k, p=2) * self.scale_factor / (self.metric.metric_operator_norm() + 1e-8)
+
+        # location_affinity has shape (batch_size, time_steps, time_steps)
+        location_affinity = self.metric.log_affinity(location, location_k, prepared_k=True)
+
+        location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
+
+
+        mask = torch.eye(location_distances.shape[1], dtype=torch.bool, device=location_distances.device)
+        location_affinity = location_affinity.masked_fill(mask[None, None, :, :], float('-inf'))
+
+        invalid_mask = (location_affinity == float('-inf')).all(dim=-1, keepdim=True)
+
+        location_weights = torch.softmax(location_affinity, dim=-1)
+        location_weights = location_weights.masked_fill(invalid_mask, 0.0)
+
+        sensory_predicted = torch.bmm(location_weights, sensory)
+
+        return sensory_predicted, invalid_mask.squeeze(-1)
+
+
 class GeometricActionDecoder(torch.nn.Module):
     def __init__(self, location_dim: int, action_dim: int, hidden_dim: int, dropout: float=0.25, 
                  physical_dim: int=2, physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
@@ -215,6 +256,7 @@ class TemLocalizer(torch.nn.Module):
         self.location_metric = LocationMetric(location_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
         self.location_refiner = TemTransformerLayer(sensory_dim, location_dim, num_heads*location_dim, num_heads, dropout)
         # self.sensory_predictor = TemTransformerLayer(location_dim, sensory_dim, embed_dim, num_heads, dropout)
+        self.sensory_predictor = SensoryPredictor(self.location_metric, location_dim)
 
         self.geometric_action_decoder = GeometricActionDecoder(
             location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
@@ -291,21 +333,27 @@ class TemLocalizer(torch.nn.Module):
             next_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
             sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
 
-        next_location_with_prefix_k = self.location_metric.prepare_k(next_location_with_prefix)
-        next_location_with_prefix_q = self.location_metric.prepare_q(next_location_with_prefix)
+
+        sensory_predicted, invalid_mask = self.sensory_predictor(next_location_with_prefix, sensory_with_prefix, max_distance=0.25)
+
+        # next_location_with_prefix_k = self.location_metric.prepare_k(next_location_with_prefix)
+        # next_location_with_prefix_q = self.location_metric.prepare_q(next_location_with_prefix)
 
         # sensory_predicted = self.sensory_predictor(
         #    sensory_location_with_prefix, sensory_location_with_prefix, sensory_with_prefix, 
         #    allow_self_attention=False, add_residual=False, causal=False
         #)
-        S = next_location_with_prefix.shape[1]
-        I = torch.eye(S, dtype=torch.bool, device=next_location_with_prefix.device)
-        mask = torch.zeros((S, S), dtype=sensory.dtype, device=sensory.device).masked_fill(I, float('-inf'))
-        sensory_predicted = scaled_dot_product_attention(
-            next_location_with_prefix_q, next_location_with_prefix_k, sensory_with_prefix, attn_mask=mask, num_heads=1
-        )
+        # S = next_location_with_prefix.shape[1]
+        # I = torch.eye(S, dtype=torch.bool, device=next_location_with_prefix.device)
+        # mask = torch.zeros((S, S), dtype=sensory.dtype, device=sensory.device).masked_fill(I, float('-inf'))
+        # TODO: we need to prevent locations from attending to faraway locations
+        # sensory_predicted = scaled_dot_product_attention(
+        #     next_location_with_prefix_q, next_location_with_prefix_k, sensory_with_prefix, attn_mask=mask, num_heads=1
+        # )
 
-        sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
+        sensory_error = torch.norm(sensory_with_prefix - sensory_predicted, dim=-1)
+        sensory_error = sensory_error.masked_fill(invalid_mask, 0.0)
+        sensory_error = sensory_error.sum() / (invalid_mask.sum() + 1e-8)
 
         return next_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
