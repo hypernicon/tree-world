@@ -146,7 +146,6 @@ class SensoryPredictor(torch.nn.Module):
         # sensory has shape (batch_size, time_steps, sensory_dim)
         B, T, D = location.shape
         assert D == self.location_dim
-        assert (B, T, self.sensory_dim) == sensory.shape
 
         location_k = self.metric.prepare_k(location)
         location_q = self.metric.prepare_q(location)
