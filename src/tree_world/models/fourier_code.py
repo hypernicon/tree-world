@@ -33,14 +33,12 @@ class LocationMetric(torch.nn.Module):
         self.scale_factor = self.metric_rank ** -0.5
         
     def affinity_2d(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
-        assert not self.square, "low_rank_affinity is only supported for low-rank metrics"
         if prepared_k:
             return (self.metric(location1) * location2).sum(dim=-1)
         else:
             return (self.metric(location1) * self.metric(location2)).sum(dim=-1)
     
     def affinity_nd(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
-        assert not self.square, "low_rank_affinity is only supported for low-rank metrics"
         if prepared_k:
             return torch.bmm(self.metric(location1), location2.transpose(-2, -1)).sum(dim=-1)
         else:
@@ -65,26 +63,15 @@ class LocationMetric(torch.nn.Module):
         return torch.norm(diff, dim=-1)
         
     def prepare_k(self, location: torch.Tensor):
-        if self.square:
-            return self.metric(location)
-        else:
-            return self.metric_k(location)
+        return self.metric(location)
     
     def prepare_q(self, location: torch.Tensor):
-        if self.square:
-            return self.metric(location)
-        else:
-            return self.metric_q(location)
+        return self.metric(location)
     
     def metric_operator_norm(self):
-        if self.square:
-            return torch.linalg.matrix_norm(self.metric.weight, ord=2)
-        else:
-            # Q = U Rq
-            _, Rq = torch.linalg.qr(self.metric_q.weight, mode="reduced")      # Rq: (..., r, r)
-
-            # K = V Rk  
-            _, Rk = torch.linalg.qr(self.metric_k.weight, mode="reduced")   # Rk: (..., r, r)
-
-            core = Rq @ Rk.mH    # (..., r, r)  (use .mH so this works for real and complex)
-            return torch.linalg.matrix_norm(core, ord=2)    # (...,)
+        # Q = U R
+        _, R = torch.linalg.qr(self.metric.weight, mode="reduced")      # Rq: (..., r, r)
+        
+        core = R @ R.mH    # (..., r, r)  (use .mH so this works for real and complex)
+        return torch.linalg.matrix_norm(core, ord=2)    # (...,)
+    
