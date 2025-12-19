@@ -156,8 +156,10 @@ class SensoryPredictor(torch.nn.Module):
         diagonal = location_affinity.diagonal(dim1=-2, dim2=-1)
 
         location_distances = (diagonal[..., None] - 2 * location_affinity + diagonal[..., None, :]).pow(0.5) * scale
+        print(f"location_distances: {location_distances.min()}, {location_distances.max()}")
 
         location_affinity = location_affinity * scale
+        print(f"location_affinity: {location_affinity.min()}, {location_affinity.max()}")
 
         location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
 
