@@ -150,8 +150,6 @@ class SensoryPredictor(torch.nn.Module):
         location_proj = self.metric.prepare_k(location)
         op_norm = self.metric.metric_operator_norm()
         scale = self.scale_factor / (op_norm + 1e-8)
-
-
         
         # location_affinity has shape (batch_size, time_steps, time_steps)
         location_affinity = torch.bmm(location_proj, location_proj.transpose(-2, -1))
@@ -161,19 +159,15 @@ class SensoryPredictor(torch.nn.Module):
 
         location_affinity = location_affinity * scale
 
-        print(location_distances.shape, location_affinity.shape)
-
         location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
 
         mask = torch.eye(location_distances.shape[1], dtype=torch.bool, device=location_distances.device)
-        location_affinity = location_affinity.masked_fill(mask[None, None, :, :], float('-inf'))
+        location_affinity = location_affinity.masked_fill(mask[None, :, :], float('-inf'))
 
         invalid_mask = (location_affinity == float('-inf')).all(dim=-1, keepdim=True)
 
         location_weights = torch.softmax(location_affinity, dim=-1)
         location_weights = location_weights.masked_fill(invalid_mask, 0.0)
-        print("location_weights", location_weights.shape)
-        print("sensory", sensory.shape)
 
         sensory_predicted = torch.bmm(location_weights, sensory)
 
