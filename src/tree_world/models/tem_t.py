@@ -140,7 +140,7 @@ class SensoryPredictor(torch.nn.Module):
         self.location_dim = location_dim
         self.scale_factor = location_dim ** -0.5
     
-    def forward(self, location: torch.Tensor, sensory: torch.Tensor, max_distance: float=0.25):
+    def forward(self, location: torch.Tensor, sensory: torch.Tensor, max_distance: float=0.10):
 
         # locations have shape (batch_size, time_steps, location_dim)
         # sensory has shape (batch_size, time_steps, sensory_dim)
@@ -150,23 +150,23 @@ class SensoryPredictor(torch.nn.Module):
         location_proj = self.metric.prepare_k(location)
         op_norm = self.metric.metric_operator_norm()
         scale = self.scale_factor / (op_norm + 1e-8)
+        print(f"scale: {scale} op_norm: {op_norm}")
         
         # location_affinity has shape (batch_size, time_steps, time_steps)
         location_affinity = torch.bmm(location_proj, location_proj.transpose(-2, -1))
         diagonal = location_affinity.diagonal(dim1=-2, dim2=-1)
 
         location_distances = (diagonal[..., None] - 2 * location_affinity + diagonal[..., None, :]).pow(0.5) * scale
-        print(f"location_distances: {location_distances.min()}, {location_distances.max()}")
 
         location_affinity = location_affinity * scale
-        print(f"location_affinity: {location_affinity.min()}, {location_affinity.max()}")
 
         location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
+        print(f"location_affinity: {location_affinity.min()}, {location_affinity.max()} location_distances: {location_distances.min()}, {location_distances.max()}")
 
         mask = torch.eye(location_distances.shape[1], dtype=torch.bool, device=location_distances.device)
         location_affinity = location_affinity.masked_fill(mask[None, :, :], float('-inf'))
 
-        invalid_mask = (location_affinity == float('-inf')).all(dim=-1, keepdim=True)
+        invalid_mask = (location_affinity <= float('-inf')).all(dim=-1, keepdim=True)
 
         location_weights = torch.softmax(location_affinity, dim=-1)
         location_weights = location_weights.masked_fill(invalid_mask, 0.0)
@@ -335,8 +335,7 @@ class TemLocalizer(torch.nn.Module):
             next_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
             sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
 
-
-        sensory_predicted, invalid_mask = self.sensory_predictor(next_location_with_prefix, sensory_with_prefix, max_distance=0.25)
+        sensory_predicted, invalid_mask = self.sensory_predictor(next_location_with_prefix, sensory_with_prefix, max_distance=0.10)
 
         # next_location_with_prefix_k = self.location_metric.prepare_k(next_location_with_prefix)
         # next_location_with_prefix_q = self.location_metric.prepare_q(next_location_with_prefix)
@@ -353,9 +352,10 @@ class TemLocalizer(torch.nn.Module):
         #     next_location_with_prefix_q, next_location_with_prefix_k, sensory_with_prefix, attn_mask=mask, num_heads=1
         # )
 
-        sensory_error = torch.norm(sensory_with_prefix - sensory_predicted, dim=-1)
+        sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
+        print(f"sensory_error: {sensory_error.min()}, {sensory_error.max()}")
         sensory_error = sensory_error.masked_fill(invalid_mask, 0.0)
-        sensory_error = sensory_error.sum() / (invalid_mask.sum() + 1e-8)
+        sensory_error = sensory_error.sum() / (invalid_mask.to(sensory_error.dtype).sum() + 1e-8)
 
         return next_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
