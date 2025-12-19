@@ -161,6 +161,8 @@ class SensoryPredictor(torch.nn.Module):
 
         location_affinity = location_affinity * scale
 
+        print(location_distances.shape, location_affinity.shape)
+
         location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
 
         mask = torch.eye(location_distances.shape[1], dtype=torch.bool, device=location_distances.device)
@@ -170,6 +172,8 @@ class SensoryPredictor(torch.nn.Module):
 
         location_weights = torch.softmax(location_affinity, dim=-1)
         location_weights = location_weights.masked_fill(invalid_mask, 0.0)
+        print("location_weights", location_weights.shape)
+        print("sensory", sensory.shape)
 
         sensory_predicted = torch.bmm(location_weights, sensory)
 
