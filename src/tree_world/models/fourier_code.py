@@ -70,8 +70,8 @@ class LocationMetric(torch.nn.Module):
     
     def metric_operator_norm(self):
         # Q = U R
-        _, R = torch.linalg.qr(self.metric.weight, mode="reduced")      # Rq: (..., r, r)
+        _, R = torch.linalg.qr(self.metric.weight.float(), mode="reduced")      # Rq: (..., r, r)
         
-        core = R @ R.mH    # (..., r, r)  (use .mH so this works for real and complex)
+        core = (R @ R.mH).to(self.metric.weight.dtype)    # (..., r, r)  (use .mH so this works for real and complex)
         return torch.linalg.matrix_norm(core, ord=2)    # (...,)
     
