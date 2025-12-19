@@ -159,10 +159,10 @@ class SensoryPredictor(torch.nn.Module):
         location_distances = (diagonal[..., None] - 2 * location_affinity + diagonal[..., None, :]).pow(0.5) * scale
 
         location_affinity = location_affinity * scale
-
-        location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
         print(f"location_affinity: {location_affinity.min()}, {location_affinity.max()} location_distances: {location_distances.min()}, {location_distances.max()}")
 
+        location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
+        
         mask = torch.eye(location_distances.shape[1], dtype=torch.bool, device=location_distances.device)
         location_affinity = location_affinity.masked_fill(mask[None, :, :], float('-inf'))
 
@@ -355,7 +355,7 @@ class TemLocalizer(torch.nn.Module):
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
         print(f"sensory_error: {sensory_error.min()}, {sensory_error.max()}")
         sensory_error = sensory_error.masked_fill(invalid_mask, 0.0)
-        sensory_error = sensory_error.sum() / (invalid_mask.to(sensory_error.dtype).sum() + 1e-8)
+        sensory_error = sensory_error.sum() / ((~invalid_mask).to(sensory_error.dtype).sum() + 1e-8)
 
         return next_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
