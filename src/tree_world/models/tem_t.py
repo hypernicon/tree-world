@@ -144,7 +144,8 @@ class SensoryPredictor(torch.nn.Module):
 
         # locations have shape (batch_size, time_steps, location_dim)
         # sensory has shape (batch_size, time_steps, sensory_dim)
-        B, T, D = memory_locations.shape
+        B, S, D = memory_locations.shape
+        B, T, D = search_locations.shape
         assert D == self.location_dim
 
         search_proj = self.metric.prepare_q(search_locations)
@@ -154,22 +155,26 @@ class SensoryPredictor(torch.nn.Module):
         
         # location_affinity has shape (batch_size, time_steps, time_steps)
         location_affinity = torch.bmm(search_proj, memory_proj.transpose(-2, -1))
-        search_diagonal = search_proj.pow(2).sum(dim=-1)
-        memory_diagonal = memory_proj.pow(2).sum(dim=-1)
+        # search_diagonal = search_proj.pow(2).sum(dim=-1)
+        # memory_diagonal = memory_proj.pow(2).sum(dim=-1)
 
-        location_distances = (search_diagonal[..., None] - 2 * location_affinity + memory_diagonal[..., None, :]).pow(0.5) * scale
+        # location_distances = (search_diagonal[..., None] - 2 * location_affinity + memory_diagonal[..., None, :]).pow(0.5) * scale
 
         location_affinity = location_affinity * scale
         
-        location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
+        # location_affinity = location_affinity.masked_fill(location_distances > max_distance, float('-inf'))
         
-        mask = torch.eye(location_distances.shape[1], dtype=torch.bool, device=location_distances.device)
+        mask = torch.eye(max(S, T), dtype=torch.bool, device=search_locations.device)[:S, :T]
         location_affinity = location_affinity.masked_fill(mask[None, :, :], float('-inf'))
 
         invalid_mask = (location_affinity <= float('-inf')).all(dim=-1, keepdim=True)
 
         location_weights = torch.softmax(location_affinity, dim=-1)
+        entropy = - (location_weights * torch.log(location_weights)).sum(dim=-1)
+
         location_weights = location_weights.masked_fill(invalid_mask, 0.0)
+        entropy = entropy.masked_fill(invalid_mask, 0.0)
+        print(f"entropy: min {entropy.min()}, mean {entropy.mean()}, max {entropy.max()}")
 
         sensory_predicted = torch.bmm(location_weights, sensory)
 
