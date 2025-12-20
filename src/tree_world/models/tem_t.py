@@ -140,22 +140,24 @@ class SensoryPredictor(torch.nn.Module):
         self.location_dim = location_dim
         self.scale_factor = location_dim ** -0.5
     
-    def forward(self, location: torch.Tensor, sensory: torch.Tensor, max_distance: float=0.10):
+    def forward(self, search_locations: torch.Tensor, memory_locations: torch.Tensor, sensory: torch.Tensor, max_distance: float=0.10):
 
         # locations have shape (batch_size, time_steps, location_dim)
         # sensory has shape (batch_size, time_steps, sensory_dim)
-        B, T, D = location.shape
+        B, T, D = memory_locations.shape
         assert D == self.location_dim
 
-        location_proj = self.metric.prepare_k(location)
+        search_proj = self.metric.prepare_q(search_locations)
+        memory_proj = self.metric.prepare_k(memory_locations)
         op_norm = self.metric.metric_operator_norm()
         scale = self.scale_factor / (op_norm + 1e-8)
         
         # location_affinity has shape (batch_size, time_steps, time_steps)
-        location_affinity = torch.bmm(location_proj, location_proj.transpose(-2, -1))
-        diagonal = location_affinity.diagonal(dim1=-2, dim2=-1)
+        location_affinity = torch.bmm(search_proj, memory_proj.transpose(-2, -1))
+        search_diagonal = search_proj.pow(2).sum(dim=-1)
+        memory_diagonal = memory_proj.pow(2).sum(dim=-1)
 
-        location_distances = (diagonal[..., None] - 2 * location_affinity + diagonal[..., None, :]).pow(0.5) * scale
+        location_distances = (search_diagonal[..., None] - 2 * location_affinity + memory_diagonal[..., None, :]).pow(0.5) * scale
 
         location_affinity = location_affinity * scale
         
@@ -333,7 +335,7 @@ class TemLocalizer(torch.nn.Module):
             next_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
             sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
 
-        sensory_predicted, invalid_mask = self.sensory_predictor(next_location_with_prefix, sensory_with_prefix, max_distance=0.10)
+        sensory_predicted, invalid_mask = self.sensory_predictor(next_location_with_prefix, next_location_with_prefix, sensory_with_prefix, max_distance=0.10)
 
         # next_location_with_prefix_k = self.location_metric.prepare_k(next_location_with_prefix)
         # next_location_with_prefix_q = self.location_metric.prepare_q(next_location_with_prefix)
