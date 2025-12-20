@@ -170,7 +170,7 @@ class SensoryPredictor(torch.nn.Module):
         invalid_mask = (location_affinity <= float('-inf')).all(dim=-1, keepdim=True)
 
         location_weights = torch.softmax(location_affinity, dim=-1)
-        entropy = - (location_weights * torch.log(location_weights)).sum(dim=-1)
+        entropy = - (location_weights * torch.log(location_weights + 1e-8)).sum(dim=-1)
 
         location_weights = location_weights.masked_fill(invalid_mask, 0.0)
         entropy = entropy.masked_fill(invalid_mask, 0.0)
