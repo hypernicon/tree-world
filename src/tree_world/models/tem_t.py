@@ -37,7 +37,7 @@ class ErrorMLP(torch.nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        return torch.softplus(self.mlp(x))
+        return torch.nn.functional.softplus(self.mlp(x))
 
 
 class TemTransformerFeedForward(torch.nn.Module):
