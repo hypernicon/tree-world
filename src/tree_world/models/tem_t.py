@@ -325,7 +325,7 @@ class TemLocalizer(torch.nn.Module):
 
             # sensory_location = (1 - refine_alpha) * sensory_location + refine_alpha * geometric_location.detach()
 
-        next_location = 0.5 * (geometric_location + sensory_location)
+        next_location = 0.5 * (geometric_location.detach() + sensory_location)
 
         # train the sensory predictor on the prefix too, if present
         # the prefix is all prior salient info, so this should be prioritized in training.
