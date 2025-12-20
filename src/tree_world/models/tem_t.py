@@ -24,6 +24,22 @@ def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: 
     return result
 
 
+class ErrorMLP(torch.nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int=128):
+        super().__init__()
+        self.input_dim = input_dim
+        self.hidden_dim = hidden_dim
+
+        self.mlp = torch.nn.Sequential(
+            torch.nn.Linear(input_dim, hidden_dim),
+            torch.nn.ReLU(),
+            torch.nn.Linear(hidden_dim, input_dim),
+        )
+
+    def forward(self, x: torch.Tensor):
+        return torch.softplus(self.mlp(x))
+
+
 class TemTransformerFeedForward(torch.nn.Module):
     def __init__(self, embed_dim: int, hidden_dim: int, dropout: float=0.1):
         super().__init__()
@@ -269,6 +285,9 @@ class TemLocalizer(torch.nn.Module):
             location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
         )
 
+        self.sensory_error_mlp = ErrorMLP(sensory_dim, 1)
+        self.location_error_mlp = ErrorMLP(location_dim, 1)
+
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
@@ -357,11 +376,19 @@ class TemLocalizer(torch.nn.Module):
         #     next_location_with_prefix_q, next_location_with_prefix_k, sensory_with_prefix, attn_mask=mask, num_heads=1
         # )
 
-        sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
+        std_sensory = self.sensory_error_mlp(sensory_with_prefix)
+        std_location = self.location_error_mlp(next_location)
+
+        sensory_error = ((sensory_with_prefix - sensory_predicted)/std_sensory).pow(2).sum(dim=-1)
         sensory_error = sensory_error.masked_fill(invalid_mask, 0.0)
         sensory_error = sensory_error.sum() / ((~invalid_mask).to(sensory_error.dtype).sum() + 1e-8)
 
-        return next_location, sensory_location, sensory_predicted, sensory_error.mean(), location_disagreement.mean(), displacement_loss
+        location_error = location_disagreement / std_location.pow(2)
+
+        print(f"std sensory min {std_sensory.min()}, mean {std_sensory.mean()}, max {std_sensory.max()}", end="\t")
+        print(f"std location min {std_location.min()}, mean {std_location.mean()}, max {std_location.max()}")
+
+        return next_location, sensory_location, sensory_predicted, sensory_error.mean(), location_error.mean(), displacement_loss
     
     def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
         return sensory + self.position_encoder(location)
