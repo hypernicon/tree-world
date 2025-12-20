@@ -285,8 +285,8 @@ class TemLocalizer(torch.nn.Module):
             location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
         )
 
-        self.sensory_error_mlp = ErrorMLP(sensory_dim, 1)
-        self.location_error_mlp = ErrorMLP(location_dim, 1)
+        self.sensory_error_mlp = ErrorMLP(sensory_dim)
+        self.location_error_mlp = ErrorMLP(location_dim)
 
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
@@ -383,7 +383,7 @@ class TemLocalizer(torch.nn.Module):
         sensory_error = sensory_error.masked_fill(invalid_mask, 0.0)
         sensory_error = sensory_error.sum() / ((~invalid_mask).to(sensory_error.dtype).sum() + 1e-8)
 
-        location_error = location_disagreement / std_location.pow(2)
+        location_error = location_disagreement / std_location.mean().pow(2)
 
         print(f"std sensory min {std_sensory.min()}, mean {std_sensory.mean()}, max {std_sensory.max()}", end="\t")
         print(f"std location min {std_location.min()}, mean {std_location.mean()}, max {std_location.max()}")
