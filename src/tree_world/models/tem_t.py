@@ -388,7 +388,7 @@ class TemLocalizer(torch.nn.Module):
             sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
 
         sensory_weights, sensory_invalid_mask = self.sensory_predictor(
-            next_location_with_prefix, next_location_with_prefix, sensory_with_prefix, location_std, None
+            next_location_with_prefix, next_location_with_prefix, sensory_with_prefix, location_std
         )
 
         sensory_predicted, sensory_std = self.sensory_predictor.sample(sensory_weights, sensory_invalid_mask, sensory_with_prefix)
