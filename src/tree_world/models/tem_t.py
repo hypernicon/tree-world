@@ -421,7 +421,7 @@ class TemLocalizer(torch.nn.Module):
             next_location, next_location, sensory, location_std
         )
 
-        sensory_predicted, sensory_std = self.sensory_predictor.sample(sensory_weights, sensory_invalid_mask, sensory_with_prefix)
+        sensory_predicted, sensory_std = self.sensory_predictor.sample(sensory_weights, sensory_invalid_mask, sensory)
 
         sensory_logprobs = self.sensory_predictor.logprobs(sensory_weights, sensory_with_prefix, sensory_predicted, sensory_std)
         sensory_logprobs = sensory_logprobs.masked_fill(sensory_invalid_mask, 0.0)
