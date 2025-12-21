@@ -33,10 +33,6 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
 
-        self.location_prefix = None
-        self.sensory_prefix = None
-        self.sensory_key_prefix = None
-
         self.step_size = step_size
 
         self.lmbda = lmbda
@@ -72,10 +68,6 @@ class RandomTemTAgent(AgentModel):
         self.last_location = None
         self.last_action = None
         self.last_sensory = None
-
-        self.location_prefix = None
-        self.sensory_prefix = None
-        self.sensory_key_prefix = None
 
         self.salience_scores = []
         self.salience_score_prefix = None
@@ -181,45 +173,25 @@ class RandomTemTAgent(AgentModel):
     def prune(self):
         T = self.last_location.shape[1]
 
-        if self.location_prefix is not None:
-            old_locations = torch.cat([self.last_location[0][:-self.buffer], self.location_prefix[0]], dim=0)
-        else:
-            old_locations = self.last_location[0][:-self.buffer]
-        
-        if self.sensory_prefix is not None:
-            old_sensory = torch.cat([self.last_sensory[0][:-self.buffer], self.sensory_prefix[0]], dim=0)
-        else:
-            old_sensory = self.last_sensory[0][:-self.buffer]
-
-        if self.salience_score_prefix is not None:
-            old_salience_scores = torch.cat([
-                torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device), 
-                self.salience_score_prefix[0]
-            ], dim=0)
-        else:
-            old_salience_scores = torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
-
-        if self.reward_prefix is not None:
-            old_rewards = torch.cat([
-                torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device), 
-                self.reward_prefix[0]
-            ], dim=0)
-        else:
-            old_rewards = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
+        old_locations = self.last_location[0][:-self.buffer]
+        old_sensory = self.last_sensory[0][:-self.buffer]
+        old_salience_scores = torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
+        old_rewards = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
+        old_actions = torch.cat(torch.tensor(self.last_action[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device), dim=0)
 
         indices = torch.argsort(old_salience_scores, dim=0, descending=True)[:self.context_window]
 
-        self.location_prefix = old_locations[indices][None, ...].detach()
-        self.sensory_prefix = old_sensory[indices][None, ...].detach()
-        self.sensory_key_prefix = self.tem.make_sensory_keys(self.location_prefix, self.sensory_prefix).detach()
-        self.salience_score_prefix = old_salience_scores[indices][None, ...].detach()
-        self.reward_prefix = old_rewards[indices][None, ...].detach()
+        location_prefix = old_locations[indices].detach()
+        sensory_prefix = old_sensory[indices].detach()
+        salience_score_prefix = old_salience_scores[indices].detach()
+        reward_prefix = old_rewards[indices].detach()
+        action_prefix = old_actions[indices].detach()
 
-        self.last_location = self.last_location[:, -self.buffer:]
-        self.last_sensory = self.last_sensory[:, -self.buffer:]
-        self.last_action = self.last_action[-self.buffer:]
-        self.salience_scores = self.salience_scores[-self.buffer:]
-        self.rewards = self.rewards[-self.buffer:]
+        self.last_location = torch.cat([location_prefix, self.last_location[:, -self.buffer:]], dim=0)
+        self.last_sensory = torch.cat([sensory_prefix, self.last_sensory[:, -self.buffer:]], dim=0)
+        self.last_action = [x for x in torch.cat([action_prefix, self.last_action[-self.buffer:]], dim=0)]
+        self.salience_scores = [x for x in torch.cat([salience_score_prefix, self.salience_scores[-self.buffer:]], dim=0)]
+        self.rewards = [x for x in torch.cat([reward_prefix, self.rewards[-self.buffer:]], dim=0)]
     
     @classmethod
     def from_config(cls, config: 'TreeWorldConfig'):

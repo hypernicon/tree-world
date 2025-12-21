@@ -335,8 +335,6 @@ class TemLocalizer(torch.nn.Module):
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
-                sensory_prefix: Optional[torch.Tensor]=None, sensory_key_prefix: Optional[torch.Tensor]=None, 
-                location_prefix: Optional[torch.Tensor]=None,
                 max_steps: int=4, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6):
         assert max_steps > 0
 
@@ -363,6 +361,7 @@ class TemLocalizer(torch.nn.Module):
             )], dim=1)
 
         sensory_location = prior_location
+
         geometric_location, displacement_loss = self.geometric_action_decoder(
             prior_location, action, allow_extension=False, regularize=True
         ) # <-- we've already extended the action sequence
@@ -412,16 +411,8 @@ class TemLocalizer(torch.nn.Module):
             print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
             raise ValueError("kl_divergence is nan")
 
-        # train the sensory predictor on the prefix too, if present
-        # the prefix is all prior salient info, so this should be prioritized in training.
-        next_location_with_prefix = next_location
-        sensory_with_prefix = sensory
-        if sensory_prefix is not None and location_prefix is not None:
-            next_location_with_prefix = torch.cat([location_prefix, sensory_location], dim=1)
-            sensory_with_prefix = torch.cat([sensory_prefix, sensory], dim=1)
-
         sensory_weights, sensory_invalid_mask = self.sensory_predictor(
-            next_location_with_prefix, next_location_with_prefix, sensory_with_prefix, location_std
+            next_location, next_location, sensory, location_std
         )
 
         sensory_predicted, sensory_std = self.sensory_predictor.sample(sensory_weights, sensory_invalid_mask, sensory_with_prefix)
@@ -434,19 +425,18 @@ class TemLocalizer(torch.nn.Module):
             print(f"sensory_logprobs is nan: {sensory_logprobs.isnan().float().sum()} out of {sensory_logprobs.numel()}")
             print(f"sensory_logprobs is inf: {sensory_logprobs.isinf().float().sum()} out of {sensory_logprobs.numel()}")
             print(f"sensory_weights: {sensory_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
-            print(f"sensory_with_prefix: {sensory_with_prefix[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_predicted: {sensory_predicted[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_invalid_mask: {sensory_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
             print(f"sensory_std: {sensory_std[0,:4, :100].detach().cpu().numpy().tolist()}")
             raise ValueError("sensory_logprobs is nan")
 
-        sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
+        sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
         sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
         sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-8)
 
         elbo = sensory_logprobs - kl_divergence.mean()
 
-        return next_location, sensory_location, sensory_predicted, elbo, sensory_error.mean(), location_disagreement.mean(), displacement_loss
+        return next_location, geometric_location, sensory_predicted, elbo, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
     def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
         return sensory + self.position_encoder(location)
