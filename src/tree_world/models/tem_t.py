@@ -389,7 +389,13 @@ class TemLocalizer(torch.nn.Module):
                 break
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
-        next_location = sensory_location
+        next_location = self.location_refiner.sample(location_weights, location_invalid_mask, sensory_location)
+        if torch.isnan(next_location).any() or torch.isinf(next_location).any():
+            print(f"next_location is nan: {next_location.isnan().float().sum()} out of {next_location.numel()}")
+            print(f"next_location is inf: {next_location.isinf().float().sum()} out of {next_location.numel()}")
+            print(f"location_weights: {location_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
+            raise ValueError("next_location is nan")
 
         geometric_logprobs = self.geometric_action_decoder.logprobs(next_location, geometric_location)
         sensory_location_logprobs = self.location_refiner.logprobs(location_weights, next_location, sensory_location, location_std)
@@ -431,6 +437,7 @@ class TemLocalizer(torch.nn.Module):
             print(f"sensory_with_prefix: {sensory_with_prefix[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_predicted: {sensory_predicted[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_invalid_mask: {sensory_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
+            print(f"sensory_std: {sensory_std[0,:4, :100].detach().cpu().numpy().tolist()}")
             raise ValueError("sensory_logprobs is nan")
 
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
