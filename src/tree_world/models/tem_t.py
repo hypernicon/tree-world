@@ -176,16 +176,23 @@ class MetricSampler(torch.nn.Module):
         qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
+        assert torch.isfinite(qk_distances).all()
+        assert not torch.isnan(qk_distances).any()
 
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
             v_scale = (E ** -0.25) / (self.v_error_mlp(close_to) + 1e-8)
             close_to_distances = self.v_metric.psuedo_distance(value, close_to, squared=True, scale=v_scale)
+            assert torch.isfinite(close_to_distances).all()
+            assert not torch.isnan(close_to_distances).any()
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
 
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
 
         qk_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
+        assert torch.isfinite(qk_weights).all()
+        assert not torch.isnan(qk_weights).any()
+        assert qk_weights.max(dim=-1).values.min() > 0.0
 
         # uniform sample for invalid rows... we'll fix this later
         qk_weights = qk_weights.masked_fill(invalid_mask, 1.0 / S)
