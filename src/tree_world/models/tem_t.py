@@ -170,7 +170,7 @@ class MetricSampler(torch.nn.Module):
         # scale = self.scale_factor ** 0.5 / (op_norm ** 0.5 + 1e-8)
         scale = self.scale_factor ** 0.5
 
-        qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
+        qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale).clamp(max=1e4)
         if qk_distances.isnan().any():
             print(f"qk_distances is nan: {qk_distances.isnan().float().sum()} out of {qk_distances.numel()}")
             print(f"query: {query[0,:4, :10].detach().float().cpu().numpy().tolist()}")
@@ -185,7 +185,7 @@ class MetricSampler(torch.nn.Module):
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
             v_scale = (E ** -0.25) / (self.v_error_mlp(close_to) + 1e-8)
-            close_to_distances = self.v_metric.psuedo_distance(value, close_to, squared=True, scale=v_scale)
+            close_to_distances = self.v_metric.psuedo_distance(value, close_to, squared=True, scale=v_scale).clamp(max=1e4)
             assert not torch.isnan(close_to_distances).any()
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
 
@@ -222,7 +222,7 @@ class MetricSampler(torch.nn.Module):
         # this is a mixture of gaussians, so unfortunately we can't use a simple log probability formula
         # how far is sampled_value from EVERY value? (B, T, S)
         scale = value_mean.shape[-1] ** -0.5
-        sampled_value_distances = self.v_metric.cross_distance(value, value_mean, squared=True, scale=scale / (v_std + 1e-8))
+        sampled_value_distances = self.v_metric.cross_distance(value, value_mean, squared=True, scale=scale / (v_std + 1e-8)).clamp(max=1e4)
         sampled_value_probs = torch.exp(-0.5 * sampled_value_distances) # B, T, S
         core_logprobs = torch.log((qk_weights * sampled_value_probs).sum(dim=-1) + 1e-8)  # B, T
         std_log_probs = torch.log(v_std[:, -T:] + 1e-8).sum(dim=-1) # B, T
