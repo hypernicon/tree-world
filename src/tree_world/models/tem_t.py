@@ -174,6 +174,13 @@ class MetricSampler(torch.nn.Module):
         #     scale = scale / (qk_std + 1e-8)
 
         qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
+        if qk_distances.isnan().any():
+            print(f"qk_distances is nan: {qk_distances.isnan().float().sum()} out of {qk_distances.numel()}")
+            print(f"query: {query[0,:4, :10].detach().cpu().numpy().tolist()}")
+            print(f"key: {key[0,:4, :10].detach().cpu().numpy().tolist()}")
+            print(f"scale: {scale}")
+            raise ValueError("qk_distances is nan")
+            
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
         assert not torch.isnan(qk_distances).any()
