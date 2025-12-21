@@ -320,12 +320,12 @@ class TemLocalizer(torch.nn.Module):
 
         self.location_metric = PseudoMetric(location_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
         self.sensory_metric = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
-        self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
+        # self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
 
         self.location_error_mlp = ErrorMLP(location_dim)
         self.sensory_error_mlp = ErrorMLP(sensory_dim)
 
-        self.location_refiner = MetricSampler(self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim)
+        self.location_refiner = MetricSampler(self.sensory_metric, self.location_metric, self.location_error_mlp, self.sensory_dim)
         self.sensory_predictor = MetricSampler(self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim)
 
         self.geometric_action_decoder = GeometricActionDecoder(
@@ -377,7 +377,7 @@ class TemLocalizer(torch.nn.Module):
 
         for k in range(max_steps):
             location_weights, location_invalid_mask = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, torch.tanh(sensory_location), None,
+                sensory, sensory, torch.tanh(sensory_location), None,
                 close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
