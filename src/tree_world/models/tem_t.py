@@ -169,8 +169,8 @@ class MetricSampler(torch.nn.Module):
         op_norm = self.qk_metric.metric_operator_norm()
         scale = self.scale_factor ** 0.5 / (op_norm ** 0.5 + 1e-8)
 
-        if qk_std is not None:
-            scale = scale / (qk_std + 1e-8)
+        # if qk_std is not None:
+        #     scale = scale / (qk_std + 1e-8)
 
         qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
