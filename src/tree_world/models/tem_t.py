@@ -156,6 +156,8 @@ class MetricSampler(torch.nn.Module):
         self.v_metric = v_metric
         self.v_error_mlp = v_error_mlp
         self.qk_dim = qk_dim
+
+        self.scale_factor = qk_dim ** -0.5
     
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, qk_std: Optional[torch.Tensor]=None):
         B, T, D = query.shape

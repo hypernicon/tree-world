@@ -655,6 +655,7 @@ if __name__ == "__main__":
 
     config = TreeWorldConfig()
     config.location_dim = 20 * 3 * 2
+    config.embed_dim = 256
     # config.model_type = "tree_world.drive_agents.DriveBasedAgentWithLocalPolicy" # "PathTracingTEMAgent"  # "HomeostaticAgent"   # "StateBasedAgentWithDriveEmbedding"
     config.model_type = "tree_world.random_agents.RandomTemTAgent"
 
