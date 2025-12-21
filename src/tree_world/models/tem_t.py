@@ -176,13 +176,13 @@ class MetricSampler(torch.nn.Module):
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
 
-        invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
-
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
-            v_scale = (self.v_metric.metric_operator_norm() ** -0.5) * (E ** -0.25) / self.v_error_mlp(close_to)
+            v_scale = (self.v_metric.metric_operator_norm() ** -0.5) * (E ** -0.25) / (self.v_error_mlp(close_to) + 1e-8)
             close_to_distances = self.v_metric.psuedo_distance(value, close_to, squared=True, scale=v_scale)
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
+
+        invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
 
         qk_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
 
