@@ -303,8 +303,8 @@ class TemLocalizer(torch.nn.Module):
         self.location_error_mlp = ErrorMLP(location_dim)
         self.sensory_error_mlp = ErrorMLP(sensory_dim)
 
-        self.location_refiner = MetricSampler(self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.location_dim)
-        self.sensory_predictor = MetricSampler(self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.sensory_dim)
+        self.location_refiner = MetricSampler(self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim)
+        self.sensory_predictor = MetricSampler(self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim)
 
         self.geometric_action_decoder = GeometricActionDecoder(
             location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
