@@ -175,7 +175,6 @@ class RandomTemTAgent(AgentModel):
         old_sensory = self.last_sensory[0][:-self.buffer]
         old_salience_scores = torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
         old_rewards = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
-        old_actions = torch.stack(self.last_action[:-self.buffer], dim=1)[0].to(old_sensory.device).to(old_sensory.dtype)
 
         indices = torch.argsort(old_salience_scores, dim=0, descending=True)[:self.context_window]
 
@@ -183,13 +182,12 @@ class RandomTemTAgent(AgentModel):
         sensory_prefix = old_sensory[indices].detach()
         salience_score_prefix = old_salience_scores[indices].detach()
         reward_prefix = old_rewards[indices].detach()
-        action_prefix = old_actions[indices].detach()
 
         self.prefix_length = location_prefix.shape[0]
 
         self.last_location = torch.cat([location_prefix[None, ...], self.last_location[:, -self.buffer:]], dim=1)
         self.last_sensory = torch.cat([sensory_prefix[None, ...], self.last_sensory[:, -self.buffer:]], dim=1)
-        self.last_action = [x[None, ...] for x in action_prefix.cpu()] + self.last_action[-self.buffer:]
+        self.last_action = self.last_action[-self.buffer:]
         self.salience_scores = [x for x in salience_score_prefix] + self.salience_scores[-self.buffer:]
         self.rewards = [x for x in reward_prefix] + self.rewards[-self.buffer:]
     
