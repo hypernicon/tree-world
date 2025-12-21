@@ -399,8 +399,9 @@ class TemLocalizer(torch.nn.Module):
         kl_divergence = sensory_location_logprobs - geometric_logprobs
         kl_divergence = kl_divergence.masked_fill(location_invalid_mask, 0.0)
         kl_divergence = kl_divergence.sum(dim=-1) / ((~location_invalid_mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-8)
-        if torch.isnan(kl_divergence).any():
+        if torch.isnan(kl_divergence).any() or torch.isinf(kl_divergence).any():
             print(f"kl_divergence is nan: {kl_divergence.isnan().float().sum()} out of {kl_divergence.numel()}")
+            print(f"kl_divergence is inf: {kl_divergence.isinf().float().sum()} out of {kl_divergence.numel()}")
             print(f"location_weights: {location_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"next_location: {next_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_location: {sensory_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
@@ -425,8 +426,9 @@ class TemLocalizer(torch.nn.Module):
         sensory_logprobs = sensory_logprobs.masked_fill(sensory_invalid_mask, 0.0)
         sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~sensory_invalid_mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
         sensory_logprobs = sensory_logprobs.mean()
-        if torch.isnan(sensory_logprobs).any():
+        if torch.isnan(sensory_logprobs).any() or torch.isinf(sensory_logprobs).any():
             print(f"sensory_logprobs is nan: {sensory_logprobs.isnan().float().sum()} out of {sensory_logprobs.numel()}")
+            print(f"sensory_logprobs is inf: {sensory_logprobs.isinf().float().sum()} out of {sensory_logprobs.numel()}")
             print(f"sensory_weights: {sensory_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_with_prefix: {sensory_with_prefix[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_predicted: {sensory_predicted[0,:4, :10].detach().float().cpu().numpy().tolist()}")
