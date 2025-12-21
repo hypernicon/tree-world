@@ -92,8 +92,8 @@ class PseudoMetric(torch.nn.Module):
                 else:
                     scale1 = scale2 = scale
 
-                vector1 = vector1 * scale
-                vector2 = vector2 * scale
+                vector1 = vector1 * scale1
+                vector2 = vector2 * scale2
 
             vector1 = self.metric(vector1)
             vector2 = self.metric(vector2)
@@ -113,8 +113,8 @@ class PseudoMetric(torch.nn.Module):
             else:
                 scale1 = scale2 = scale
 
-            vector1 = vector1 * scale
-            vector2 = vector2 * scale
+            vector1 = vector1 * scale1
+            vector2 = vector2 * scale2
         
         vector1 = self.metric(vector1)
         vector2 = self.metric(vector2)
