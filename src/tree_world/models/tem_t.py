@@ -169,7 +169,7 @@ class MetricSampler(torch.nn.Module):
         op_norm = self.qk_metric.metric_operator_norm()
         scale = self.scale_factor ** 0.5 / (op_norm ** 0.5 + 1e-8)
 
-        if qk_std is not None:
+        if qk_std is None:
             scale = scale / qk_std
 
         qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
@@ -180,7 +180,8 @@ class MetricSampler(torch.nn.Module):
 
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
-            close_to_distances = self.qk_metric.psuedo_distance(key, close_to, squared=True, scale=scale)
+            v_scale = (self.v_metric.metric_operator_norm() ** -0.5) * (E ** -0.25) / self.v_error_mlp(close_to)
+            close_to_distances = self.v_metric.psuedo_distance(value, close_to, squared=True, scale=v_scale)
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
 
         qk_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
