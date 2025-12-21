@@ -407,7 +407,6 @@ class TemLocalizer(torch.nn.Module):
         mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask[:, prefix_length:]
         kl_divergence = kl_divergence.masked_fill(mask, 0.0)
         kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-8)
-        assert (kl_divergence >= 0.0).all()
         if torch.isnan(kl_divergence).any() or torch.isinf(kl_divergence).any():
             print(f"kl_divergence is nan: {kl_divergence.isnan().float().sum()} out of {kl_divergence.numel()}")
             print(f"kl_divergence is inf: {kl_divergence.isinf().float().sum()} out of {kl_divergence.numel()}")
@@ -424,8 +423,9 @@ class TemLocalizer(torch.nn.Module):
         sensory_predicted, sensory_std = self.sensory_predictor.sample(sensory_weights, sensory_invalid_mask, sensory)
 
         sensory_logprobs = self.sensory_predictor.logprobs(sensory_weights, sensory, sensory_predicted, sensory_std)
-        sensory_logprobs = sensory_logprobs.masked_fill(sensory_invalid_mask, 0.0)
-        sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~sensory_invalid_mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
+        mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
+        sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
+        sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
         sensory_logprobs = sensory_logprobs.mean()
         if torch.isnan(sensory_logprobs).any() or torch.isinf(sensory_logprobs).any():
             print(f"sensory_logprobs is nan: {sensory_logprobs.isnan().float().sum()} out of {sensory_logprobs.numel()}")
@@ -440,7 +440,10 @@ class TemLocalizer(torch.nn.Module):
         sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
         sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-8)
 
+        assert (kl_divergence >= 0.0).all()
+        assert (sensory_logprobs <= 0.0).all()
         elbo = sensory_logprobs - kl_divergence.mean()
+        assert (elbo <= 0.0).all()
 
         return next_location, geometric_location, sensory_predicted, elbo, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
