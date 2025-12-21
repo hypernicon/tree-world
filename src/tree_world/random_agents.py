@@ -52,9 +52,9 @@ class RandomTemTAgent(AgentModel):
         self.buffer = buffer
 
         self.salience_scores = []
-        self.salience_score_prefix = None
         self.rewards = []
-        self.reward_prefix = None
+
+        self.prefix_length = 0
 
     def reset(self):
         self.t = 0
@@ -70,10 +70,9 @@ class RandomTemTAgent(AgentModel):
         self.last_sensory = None
 
         self.salience_scores = []
-        self.salience_score_prefix = None
-
         self.rewards = []
-        self.reward_prefix = None
+
+        self.prefix_length = 0
 
         if self.use_cuda:
             torch.cuda.empty_cache()
@@ -106,7 +105,7 @@ class RandomTemTAgent(AgentModel):
 
         next_location, sensory_location, sensory_predicted, elbo, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
-                self.last_sensory, self.last_location, last_action
+                self.last_sensory, self.last_location, last_action, prefix_length=self.prefix_length
             )
         )
 
@@ -176,7 +175,7 @@ class RandomTemTAgent(AgentModel):
         old_sensory = self.last_sensory[0][:-self.buffer]
         old_salience_scores = torch.tensor(self.salience_scores[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
         old_rewards = torch.tensor(self.rewards[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device)
-        old_actions = torch.cat(torch.tensor(self.last_action[:-self.buffer], dtype=old_sensory.dtype, device=old_sensory.device), dim=0)
+        old_actions = torch.stack(self.last_action[:-self.buffer], dim=1)[0]
 
         indices = torch.argsort(old_salience_scores, dim=0, descending=True)[:self.context_window]
 
@@ -186,9 +185,11 @@ class RandomTemTAgent(AgentModel):
         reward_prefix = old_rewards[indices].detach()
         action_prefix = old_actions[indices].detach()
 
+        self.prefix_length = location_prefix.shape[0]
+
         self.last_location = torch.cat([location_prefix, self.last_location[:, -self.buffer:]], dim=0)
         self.last_sensory = torch.cat([sensory_prefix, self.last_sensory[:, -self.buffer:]], dim=0)
-        self.last_action = [x for x in torch.cat([action_prefix, self.last_action[-self.buffer:]], dim=0)]
+        self.last_action = [x[None, ...] for x in torch.cat([action_prefix, self.last_action[-self.buffer:]], dim=0)]
         self.salience_scores = [x for x in torch.cat([salience_score_prefix, self.salience_scores[-self.buffer:]], dim=0)]
         self.rewards = [x for x in torch.cat([reward_prefix, self.rewards[-self.buffer:]], dim=0)]
     
