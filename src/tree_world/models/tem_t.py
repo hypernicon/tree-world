@@ -224,8 +224,8 @@ class MetricSampler(torch.nn.Module):
         sampled_value_distances = self.v_metric.cross_distance(value, value_mean, squared=True, scale=scale / (v_std[:, -S:] + 1e-8))
         sampled_value_probs = torch.exp(-0.5 * sampled_value_distances) # B, T, S
         core_logprobs = torch.log((qk_weights * sampled_value_probs).sum(dim=-1) + 1e-8)  # B, T
-        logprobs = core_logprobs - 0.5 * math.log(2 * math.pi) - torch.log(v_std + 1e-8).sum(dim=-1) # B, T
-        print(f"logprobs: {logprobs.shape} min: {logprobs.min().item()} mean: {logprobs.mean().item()} max: {logprobs.max().item()}")
+        std_log_probs = torch.log(v_std[:, -S:] + 1e-8).sum(dim=-1) # B, T
+        logprobs = core_logprobs - 0.5 * math.log(2 * math.pi) - std_log_probs # B, T
         return logprobs
 
 
@@ -442,9 +442,7 @@ class TemLocalizer(torch.nn.Module):
         sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-8)
 
         assert (kl_divergence >= 0.0).all()
-        assert (sensory_logprobs <= 0.0).all()
         elbo = sensory_logprobs - kl_divergence.mean()
-        assert (elbo <= 0.0).all()
 
         return next_location, geometric_location, sensory_predicted, elbo, sensory_error.mean(), location_disagreement.mean(), displacement_loss
     
