@@ -320,12 +320,12 @@ class TemLocalizer(torch.nn.Module):
 
         self.location_metric = PseudoMetric(location_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
         self.sensory_metric = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
-        # self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
+        self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
 
         self.location_error_mlp = ErrorMLP(location_dim)
         self.sensory_error_mlp = ErrorMLP(sensory_dim)
 
-        self.location_refiner = MetricSampler(self.sensory_metric, self.location_metric, self.location_error_mlp, self.sensory_dim)
+        self.location_refiner = MetricSampler(self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim)
         self.sensory_predictor = MetricSampler(self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim)
 
         self.geometric_action_decoder = GeometricActionDecoder(
@@ -377,7 +377,7 @@ class TemLocalizer(torch.nn.Module):
 
         for k in range(max_steps):
             location_weights, location_invalid_mask = self.location_refiner(
-                sensory, sensory, torch.tanh(sensory_location), None,
+                sensory_plus_geometric, sensory_plus_geometric, torch.tanh(sensory_location), None,
                 close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
@@ -388,10 +388,8 @@ class TemLocalizer(torch.nn.Module):
             if (location_disagreement < threshold).all():
                 break
 
-            # sensory_location = (1 - refine_alpha) * sensory_location + refine_alpha * geometric_location.detach()
-
-        # ... should we move towards the geometric location?
-        next_location = 0.5 * (geometric_location + sensory_location).detach()
+        # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
+        next_location = sensory_location
 
         geometric_logprobs = self.geometric_action_decoder.logprobs(next_location, geometric_location)
         sensory_location_logprobs = self.location_refiner.logprobs(location_weights, next_location, sensory_location, location_std)
