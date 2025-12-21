@@ -300,7 +300,7 @@ class TemLocalizer(torch.nn.Module):
 
         self.location_metric = PseudoMetric(location_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
         self.sensory_metric = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
-        self.sensory_metric_with_location = PseudoMetric(sensory_dim + location_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
+        self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
 
         self.location_error_mlp = ErrorMLP(location_dim)
         self.sensory_error_mlp = ErrorMLP(sensory_dim)
