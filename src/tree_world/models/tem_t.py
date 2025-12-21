@@ -402,7 +402,7 @@ class TemLocalizer(torch.nn.Module):
             next_location[:, prefix_length:], geometric_location[:, prefix_length:]
         )
         sensory_location_logprobs = self.location_refiner.logprobs(
-            location_weights[:, prefix_length:], next_location[:, prefix_length:], sensory_location, location_std[:, prefix_length:]
+            location_weights[:, prefix_length:], next_location[:, prefix_length:], sensory_location, location_std
         )
 
         kl_divergence = sensory_location_logprobs - geometric_logprobs
