@@ -11,17 +11,17 @@ class PseudoMetric(torch.nn.Module):
         super().__init__()
         self.vector_dim = vector_dim
 
-        alphas = make_alphas(vector_dim, dim, scale, ratio)
-        lattice_basis, K, K_dagger = make_lattice_basis(alphas, dim)
+        # alphas = make_alphas(vector_dim, dim, scale, ratio)
+        # lattice_basis, K, K_dagger = make_lattice_basis(alphas, dim)
 
-        if alphas_trainable:
-            self.alphas = torch.nn.Parameter(alphas)
-        else:
-            self.alphas = torch.nn.Buffer(alphas)
+        # if alphas_trainable:
+        #     self.alphas = torch.nn.Parameter(alphas)
+        # else:
+        #     self.alphas = torch.nn.Buffer(alphas)
 
-        self.lattice_basis = torch.nn.Buffer(lattice_basis)
-        self.K = torch.nn.Buffer(K)
-        self.K_dagger = torch.nn.Buffer(K_dagger)
+        # self.lattice_basis = torch.nn.Buffer(lattice_basis)
+        # self.K = torch.nn.Buffer(K)
+        # self.K_dagger = torch.nn.Buffer(K_dagger)
     
         if metric_rank is not None:
             self.metric_rank = min(vector_dim, metric_rank)
