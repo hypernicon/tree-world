@@ -106,8 +106,7 @@ class RandomTemTAgent(AgentModel):
 
         next_location, sensory_location, sensory_predicted, elbo, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
-                self.last_sensory, self.last_location, last_action, 
-                location_prefix=self.location_prefix, sensory_prefix=self.sensory_prefix, sensory_key_prefix=self.sensory_key_prefix
+                self.last_sensory, self.last_location, last_action
             )
         )
 
