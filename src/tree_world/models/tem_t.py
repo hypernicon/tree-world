@@ -176,11 +176,11 @@ class MetricSampler(torch.nn.Module):
         qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
         if qk_distances.isnan().any():
             print(f"qk_distances is nan: {qk_distances.isnan().float().sum()} out of {qk_distances.numel()}")
-            print(f"query: {query[0,:4, :10].detach().cpu().numpy().tolist()}")
-            print(f"key: {key[0,:4, :10].detach().cpu().numpy().tolist()}")
+            print(f"query: {query[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"key: {key[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"scale: {scale}")
             raise ValueError("qk_distances is nan")
-            
+
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
         assert not torch.isnan(qk_distances).any()
@@ -399,6 +399,13 @@ class TemLocalizer(torch.nn.Module):
         kl_divergence = sensory_location_logprobs - geometric_logprobs
         kl_divergence = kl_divergence.masked_fill(location_invalid_mask, 0.0)
         kl_divergence = kl_divergence.sum(dim=-1) / ((~location_invalid_mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-8)
+        if torch.isnan(kl_divergence).any():
+            print(f"kl_divergence is nan: {kl_divergence.isnan().float().sum()} out of {kl_divergence.numel()}")
+            print(f"location_weights: {location_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"next_location: {next_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"sensory_location: {sensory_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
+            raise ValueError("kl_divergence is nan")
 
         # train the sensory predictor on the prefix too, if present
         # the prefix is all prior salient info, so this should be prioritized in training.
@@ -418,6 +425,13 @@ class TemLocalizer(torch.nn.Module):
         sensory_logprobs = sensory_logprobs.masked_fill(sensory_invalid_mask, 0.0)
         sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~sensory_invalid_mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
         sensory_logprobs = sensory_logprobs.mean()
+        if torch.isnan(sensory_logprobs).any():
+            print(f"sensory_logprobs is nan: {sensory_logprobs.isnan().float().sum()} out of {sensory_logprobs.numel()}")
+            print(f"sensory_weights: {sensory_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"sensory_with_prefix: {sensory_with_prefix[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"sensory_predicted: {sensory_predicted[0,:4, :10].detach().float().cpu().numpy().tolist()}")
+            print(f"sensory_invalid_mask: {sensory_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
+            raise ValueError("sensory_logprobs is nan")
 
         sensory_error = (sensory_with_prefix - sensory_predicted).pow(2).sum(dim=-1)
         sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
