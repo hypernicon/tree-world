@@ -159,7 +159,8 @@ class MetricSampler(torch.nn.Module):
 
         self.scale_factor = qk_dim ** -0.5
     
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, qk_std: Optional[torch.Tensor]=None):
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, 
+                qk_std: Optional[torch.Tensor]=None, close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0):
         B, T, D = query.shape
         B, S, D = key.shape
         B, T, E = value.shape
@@ -176,6 +177,11 @@ class MetricSampler(torch.nn.Module):
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
 
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
+
+        if close_to is not None:
+            # close_to has shape (B, S, D) --> distances (B, S)
+            close_to_distances = self.qk_metric.psuedo_distance(key, close_to, squared=True, scale=scale)
+            qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
 
         qk_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
 
@@ -357,7 +363,8 @@ class TemLocalizer(torch.nn.Module):
 
         for k in range(max_steps):
             location_weights, location_invalid_mask = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, sensory_location, None
+                sensory_plus_geometric, sensory_plus_geometric, sensory_location, None,
+                close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
             sensory_location, location_std = self.location_refiner.sample(location_weights, location_invalid_mask, sensory_location)

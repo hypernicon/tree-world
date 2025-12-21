@@ -55,12 +55,24 @@ class PseudoMetric(torch.nn.Module):
 
         return self.scale_factor * base
 
-    def psuedo_distance(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
+    def psuedo_distance(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False, squared: bool=False, scale: Optional[Union[float, torch.Tensor]]=None):
+        if scale is not None:
+            if isinstance(scale, torch.Tensor):
+                while scale.ndim < location1.ndim:
+                    scale = scale[..., None]
+                    
+            location1 = location1 * scale
+            location2 = location2 * scale
+
         if prepared_k:
             diff = self.metric(location1) - location2
         else:
             diff = self.metric(location1 - location2)
-        return torch.norm(diff, dim=-1)
+
+        if squared:
+            return diff.pow(2).sum(dim=-1)
+        else:
+            return torch.norm(diff, dim=-1)
         
     def prepare_k(self, location: torch.Tensor):
         return self.metric(location)
