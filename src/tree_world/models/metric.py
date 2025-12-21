@@ -70,9 +70,6 @@ class PseudoMetric(torch.nn.Module):
 
     def cross_affinity(self, vector1: torch.Tensor, vector2: torch.Tensor, projected: bool=False, scale: Optional[Union[float, torch.Tensor]]=None):
         if not projected:
-            vector1 = self.metric(vector1)
-            vector2 = self.metric(vector2)
-
             if scale is not None:
                 if isinstance(scale, torch.Tensor):
                     while scale.ndim < vector1.ndim:
@@ -81,14 +78,14 @@ class PseudoMetric(torch.nn.Module):
             vector1 = vector1 * scale
             vector2 = vector2 * scale
 
+            vector1 = self.metric(vector1)
+            vector2 = self.metric(vector2)
+
         affinity = (vector1[..., None, :] * vector2[..., None, :, :]).sum(dim=-1)
 
         return affinity
     
     def cross_distance(self, vector1: torch.Tensor, vector2: torch.Tensor, squared: bool=False, scale: Optional[Union[float, torch.Tensor]]=None):
-        vector1 = self.metric(vector1)
-        vector2 = self.metric(vector2)
-
         if scale is not None:
             if isinstance(scale, torch.Tensor):
                 while scale.ndim < vector1.ndim:
@@ -96,6 +93,9 @@ class PseudoMetric(torch.nn.Module):
                     
             vector1 = vector1 * scale
             vector2 = vector2 * scale
+        
+        vector1 = self.metric(vector1)
+        vector2 = self.metric(vector2)
 
         affinity = self.cross_affinity(vector1, vector2, projected=True, scale=None)
         
