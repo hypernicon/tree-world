@@ -377,7 +377,7 @@ class TemLocalizer(torch.nn.Module):
 
         for k in range(max_steps):
             location_weights, location_invalid_mask = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, sensory_location, None,
+                sensory_plus_geometric, sensory_plus_geometric, torch.tanh(sensory_location), None,
                 close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
