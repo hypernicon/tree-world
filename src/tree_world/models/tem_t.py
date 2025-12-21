@@ -186,7 +186,7 @@ class MetricSampler(torch.nn.Module):
     
     def sample(self, qk_weights: torch.Tensor, invalid_mask: torch.Tensor, value_mean: torch.Tensor):
         B, T, S = qk_weights.shape
-        E = self.value_dim
+        B, T, E = value_mean.shape
 
         v_std = self.v_error_mlp(value_mean)
 
