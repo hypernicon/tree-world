@@ -404,7 +404,7 @@ class TemLocalizer(torch.nn.Module):
         )
 
         kl_divergence = sensory_location_logprobs - geometric_logprobs
-        kl_divergence = kl_divergence.masked_fill(location_invalid_mask, 0.0)
+        kl_divergence = kl_divergence.masked_fill(location_invalid_mask[:, prefix_length:], 0.0)
         kl_divergence = kl_divergence.sum(dim=-1) / ((~location_invalid_mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-8)
         if torch.isnan(kl_divergence).any() or torch.isinf(kl_divergence).any():
             print(f"kl_divergence is nan: {kl_divergence.isnan().float().sum()} out of {kl_divergence.numel()}")
