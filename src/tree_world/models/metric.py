@@ -87,8 +87,8 @@ class PseudoMetric(torch.nn.Module):
                     while scale.ndim < vector1.ndim:
                         scale = scale[..., None]
                     
-            vector1 = vector1 * scale
-            vector2 = vector2 * scale
+            vector1 = vector1 * scale[:, -vector1.shape[-1]:]
+            vector2 = vector2 * scale[:, -vector2.shape[-1]:]
 
             vector1 = self.metric(vector1)
             vector2 = self.metric(vector2)
@@ -103,8 +103,8 @@ class PseudoMetric(torch.nn.Module):
                 while scale.ndim < vector1.ndim:
                     scale = scale[..., None]
                     
-            vector1 = vector1 * scale
-            vector2 = vector2 * scale
+            vector1 = vector1 * scale[:, -vector1.shape[-1]:]
+            vector2 = vector2 * scale[:, -vector2.shape[-1]:]
         
         vector1 = self.metric(vector1)
         vector2 = self.metric(vector2)
