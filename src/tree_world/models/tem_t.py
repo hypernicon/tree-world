@@ -261,7 +261,8 @@ class GeometricActionDecoder(torch.nn.Module):
 
         assert self.location_dim % (2 * self.physical_dim) == 0
 
-    def forward(self, location: torch.Tensor, action: torch.Tensor, eps: float=1e-6, allow_extension: bool=True, regularize: bool=True):
+    def forward(self, location: torch.Tensor, action: torch.Tensor, eps: float=1e-6, 
+                allow_extension: bool=True, regularize: bool=True):
         B, T, D = location.shape
         assert D == self.location_dim
         assert (B, T, self.action_dim) == action.shape
@@ -335,7 +336,7 @@ class TemLocalizer(torch.nn.Module):
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
-                max_steps: int=4, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6):
+                max_steps: int=4, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: int=0):
         assert max_steps > 0
 
         B, T, S = sensory.shape
@@ -363,8 +364,9 @@ class TemLocalizer(torch.nn.Module):
         sensory_location = prior_location
 
         geometric_location, displacement_loss = self.geometric_action_decoder(
-            prior_location, action, allow_extension=False, regularize=True
+            prior_location[:, prefix_length:], action, allow_extension=False, regularize=True
         ) # <-- we've already extended the action sequence
+        geometric_location = torch.cat([prior_location[:, :prefix_length], geometric_location], dim=1)
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
         
         # if sensory_key_prefix is not None and location_prefix is not None:
@@ -396,8 +398,12 @@ class TemLocalizer(torch.nn.Module):
             print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
             raise ValueError("next_location is nan")
 
-        geometric_logprobs = self.geometric_action_decoder.logprobs(next_location, geometric_location)
-        sensory_location_logprobs = self.location_refiner.logprobs(location_weights, next_location, sensory_location, location_std)
+        geometric_logprobs = self.geometric_action_decoder.logprobs(
+            next_location[:, prefix_length:], geometric_location[:, prefix_length:]
+        )
+        sensory_location_logprobs = self.location_refiner.logprobs(
+            location_weights[:, prefix_length:], next_location[:, prefix_length:], sensory_location, location_std[:, prefix_length:]
+        )
 
         kl_divergence = sensory_location_logprobs - geometric_logprobs
         kl_divergence = kl_divergence.masked_fill(location_invalid_mask, 0.0)
