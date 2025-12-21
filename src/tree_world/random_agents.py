@@ -16,7 +16,7 @@ class RandomTemTAgent(AgentModel):
         lmbda: float=1.0,
         beta: float=1.0,
         dim: int=2,
-        context_window: int=768,
+        context_window: int=512,
         buffer: int=256
     ):
         self.t = 0
