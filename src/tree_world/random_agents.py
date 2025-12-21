@@ -112,7 +112,7 @@ class RandomTemTAgent(AgentModel):
             if last_action is not None:
                 last_action = last_action.to("cuda").to(self.dtype)
 
-        next_location, sensory_location, sensory_predicted, sensory_error, location_disagreement, displacement_loss = (
+        next_location, sensory_location, sensory_predicted, elbo, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
                 self.last_sensory, self.last_location, last_action, 
                 location_prefix=self.location_prefix, sensory_prefix=self.sensory_prefix, sensory_key_prefix=self.sensory_key_prefix
@@ -133,7 +133,7 @@ class RandomTemTAgent(AgentModel):
         self.last_location = next_location.detach().requires_grad_()
         self.location_history = sensory_location.detach()
         self.actual_location_history.append(agent_location)
-        self.loss.append(sensory_error + self.lmbda * location_disagreement + self.beta * displacement_loss)
+        self.loss.append(-elbo + self.beta * displacement_loss)
         self.loc_loss.append(location_disagreement)
         self.sens_loss.append(sensory_error)
         self.displacement_loss.append(displacement_loss)
