@@ -189,7 +189,7 @@ class RandomTemTAgent(AgentModel):
 
         self.last_location = torch.cat([location_prefix[None, ...], self.last_location[:, -self.buffer:]], dim=1)
         self.last_sensory = torch.cat([sensory_prefix[None, ...], self.last_sensory[:, -self.buffer:]], dim=1)
-        self.last_action = [x[None, ...] for x in action_prefix] + self.last_action[-self.buffer:]
+        self.last_action = [x[None, ...] for x in action_prefix.cpu()] + self.last_action[-self.buffer:]
         self.salience_scores = [x for x in salience_score_prefix] + self.salience_scores[-self.buffer:]
         self.rewards = [x for x in reward_prefix] + self.rewards[-self.buffer:]
     
