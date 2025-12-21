@@ -221,11 +221,10 @@ class MetricSampler(torch.nn.Module):
         # this is a mixture of gaussians, so unfortunately we can't use a simple log probability formula
         # how far is sampled_value from EVERY value? (B, T, S)
         scale = value_mean.shape[-1] ** -0.5
-        print(f"scale: {scale}, v_std: {v_std.shape}, value_mean: {value_mean.shape}, value: {value.shape}")
-        sampled_value_distances = self.v_metric.cross_distance(value, value_mean, squared=True, scale=scale / (v_std[:, -S:] + 1e-8))
+        sampled_value_distances = self.v_metric.cross_distance(value, value_mean, squared=True, scale=scale / (v_std[:, -S-1:] + 1e-8))
         sampled_value_probs = torch.exp(-0.5 * sampled_value_distances) # B, T, S
         core_logprobs = torch.log((qk_weights * sampled_value_probs).sum(dim=-1) + 1e-8)  # B, T
-        std_log_probs = torch.log(v_std[:, -S:] + 1e-8).sum(dim=-1) # B, T
+        std_log_probs = torch.log(v_std[:, -S-1:] + 1e-8).sum(dim=-1) # B, T
         logprobs = core_logprobs - 0.5 * math.log(2 * math.pi) - std_log_probs # B, T
         return logprobs
 
