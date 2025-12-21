@@ -166,8 +166,9 @@ class MetricSampler(torch.nn.Module):
         B, T, E = value.shape
         assert D == self.qk_dim
 
-        op_norm = self.qk_metric.metric_operator_norm()
-        scale = self.scale_factor ** 0.5 / (op_norm ** 0.5 + 1e-8)
+        # op_norm = self.qk_metric.metric_operator_norm()
+        # scale = self.scale_factor ** 0.5 / (op_norm ** 0.5 + 1e-8)
+        scale = self.scale_factor ** 0.5
 
         # if qk_std is not None:
         #     scale = scale / (qk_std + 1e-8)
