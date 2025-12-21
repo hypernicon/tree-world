@@ -353,10 +353,10 @@ class TemLocalizer(torch.nn.Module):
                 device=prior_location.device
             )], dim=1)
         
-        if action.shape[1] < T:
+        if action.shape[1] < T - prefix_length:
             action = torch.cat([
                 action, 
-                torch.zeros((B, T - action.shape[1], self.action_dim), 
+                torch.zeros((B, T - prefix_length - action.shape[1], self.action_dim), 
                 dtype=action.dtype, 
                 device=action.device
             )], dim=1)
