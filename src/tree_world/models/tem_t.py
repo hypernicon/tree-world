@@ -407,6 +407,7 @@ class TemLocalizer(torch.nn.Module):
         mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask[:, prefix_length:]
         kl_divergence = kl_divergence.masked_fill(mask, 0.0)
         kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-8)
+        assert (kl_divergence >= 0.0).all()
         if torch.isnan(kl_divergence).any() or torch.isinf(kl_divergence).any():
             print(f"kl_divergence is nan: {kl_divergence.isnan().float().sum()} out of {kl_divergence.numel()}")
             print(f"kl_divergence is inf: {kl_divergence.isinf().float().sum()} out of {kl_divergence.numel()}")
