@@ -1,5 +1,6 @@
 import math
 import torch
+import torch.distributions as D
 
 from typing import Optional
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
@@ -25,15 +26,16 @@ def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: 
 
 
 class ErrorMLP(torch.nn.Module):
-    def __init__(self, input_dim: int, hidden_dim: int=128):
+    def __init__(self, input_dim: int, output_dim: int, hidden_dim: int=128):
         super().__init__()
         self.input_dim = input_dim
+        self.output_dim = output_dim
         self.hidden_dim = hidden_dim
 
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(input_dim, hidden_dim),
             torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, input_dim),
+            torch.nn.Linear(hidden_dim, output_dim),
         )
 
     def forward(self, x: torch.Tensor):
@@ -159,11 +161,11 @@ class MetricSampler(torch.nn.Module):
 
         self.scale_factor = qk_dim ** -0.5
     
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, 
-                qk_std: Optional[torch.Tensor]=None, close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0):
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
+                close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0):
         B, T, D = query.shape
         B, S, D = key.shape
-        B, T, E = value.shape
+        B, S, E = value.shape
         assert D == self.qk_dim
 
         # op_norm = self.qk_metric.metric_operator_norm()
@@ -199,34 +201,17 @@ class MetricSampler(torch.nn.Module):
         # uniform sample for invalid rows... we'll fix this later
         qk_weights = qk_weights.masked_fill(invalid_mask, 1.0 / S)
         
-        return qk_weights, invalid_mask.squeeze(-1)
-    
-    def sample(self, qk_weights: torch.Tensor, invalid_mask: torch.Tensor, value_mean: torch.Tensor):
-        B, T, S = qk_weights.shape
-        B, T, E = value_mean.shape
-
-        v_std = self.v_error_mlp(value_mean)
-
-        sample_indices = torch.multinomial(qk_weights.view(-1, S), num_samples=1).view(B, T, 1, 1)
-        sampled_value = value_mean[:, None, ...].repeat(1, T, 1, 1).gather(dim=-2, index=sample_indices.repeat(1, 1, 1, E)).squeeze(-2)
-
-        sampled_value = sampled_value + torch.randn_like(sampled_value) * v_std
-        sampled_value = sampled_value.masked_fill(invalid_mask[..., None], 0.0)
-
-        return sampled_value, v_std
-
-    def logprobs(self, qk_weights: torch.Tensor, value: torch.Tensor, value_mean: torch.Tensor, v_std: torch.Tensor):
-        B, T, S = qk_weights.shape
-        B, T, E = value.shape
-        # compute the log probability of sampled_value
-        # this is a mixture of gaussians, so unfortunately we can't use a simple log probability formula
-        # how far is sampled_value from EVERY value? (B, T, S)
-        sampled_value_distances = ((value[:, :, None, :] - value_mean[:, None, :, :]) / (v_std[:, None, :, :] + 1e-8)).pow(2).sum(dim=-1)
-        sampled_value_probs = torch.exp(-0.5 * sampled_value_distances)  / (v_std.prod(dim=-1) + 1e-8) # B, T, S
-        core_logprobs = torch.log((qk_weights * sampled_value_probs).sum(dim=-1) + 1e-8)  # B, T
-        # std_log_probs = torch.log(v_std + 1e-8).sum(dim=-1) # B, T
-        logprobs = core_logprobs - 0.5 * math.log(2 * math.pi) * E # - std_log_probs # B, T
-        return logprobs
+        qk_categorical = D.Categorical(probs=qk_weights)
+        sampler = D.Independent(
+            D.Normal(
+                loc=value[:, None, :, :].expand(-1, T, -1, -1), 
+                scale=value_std[:, None, :, :].expand(-1, T, -1, -1)
+            ), 
+            1
+        )
+        dist = D.MixtureSameFamily(qk_categorical, sampler)
+        
+        return dist, invalid_mask.squeeze(-1)
 
 
 class GeometricActionDecoder(torch.nn.Module):
@@ -322,8 +307,8 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_metric = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
         self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
 
-        self.location_error_mlp = ErrorMLP(location_dim)
-        self.sensory_error_mlp = ErrorMLP(sensory_dim)
+        self.location_error_mlp = ErrorMLP(location_dim, location_dim)
+        self.sensory_error_mlp = ErrorMLP(location_dim,sensory_dim)
 
         self.location_refiner = MetricSampler(self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim)
         self.sensory_predictor = MetricSampler(self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim)
@@ -376,12 +361,13 @@ class TemLocalizer(torch.nn.Module):
         #    sensory_location_with_prefix = sensory_location
 
         for k in range(max_steps):
-            location_weights, location_invalid_mask = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, torch.tanh(sensory_location), None,
+            location_std = self.location_error_mlp(sensory_location)
+            location_distribution, location_invalid_mask = self.location_refiner(
+                sensory_plus_geometric, sensory_plus_geometric, torch.tanh(sensory_location), location_std,
                 close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
-            sensory_location, location_std = self.location_refiner.sample(location_weights, location_invalid_mask, sensory_location)
+            sensory_location = location_distribution.sample()
 
             location_disagreement = self.location_metric.psuedo_distance(geometric_location, sensory_location)
 
@@ -400,9 +386,7 @@ class TemLocalizer(torch.nn.Module):
         geometric_logprobs = self.geometric_action_decoder.logprobs(
             next_location[:, prefix_length:], geometric_location[:, prefix_length:]
         )
-        sensory_location_logprobs = self.location_refiner.logprobs(
-            location_weights[:, prefix_length:], next_location[:, prefix_length:], sensory_location, location_std
-        )
+        sensory_location_logprobs = location_distribution.log_prob(sensory_location)
 
         kl_divergence = sensory_location_logprobs - geometric_logprobs
         mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask[:, prefix_length:]
@@ -417,13 +401,14 @@ class TemLocalizer(torch.nn.Module):
             print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
             raise ValueError("kl_divergence is nan")
 
-        sensory_weights, sensory_invalid_mask = self.sensory_predictor(
-            next_location, next_location, sensory, location_std
+        sensory_std = self.sensory_error_mlp(next_location)
+        sensory_distribution, sensory_invalid_mask = self.sensory_predictor(
+            next_location, next_location, sensory, sensory_std
         )
 
-        sensory_predicted, sensory_std = self.sensory_predictor.sample(sensory_weights, sensory_invalid_mask, sensory)
+        sensory_predicted = sensory_distribution.sample()
 
-        sensory_logprobs = self.sensory_predictor.logprobs(sensory_weights, sensory, sensory_predicted, sensory_std)
+        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
         sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
