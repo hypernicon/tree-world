@@ -163,6 +163,13 @@ class RandomTemTAgent(AgentModel):
         sys.stdout.flush()
         self.optimizer.zero_grad()
         (sum(self.loss) / len(self.loss)).backward()
+        for n, p in self.tem.named_parameters():
+            if p is None: 
+                continue
+            if torch.isnan(p).any() or torch.isinf(p).any():
+                print(f"Param gradient blew up: {n}")
+                raise RuntimeError(f"Param blew up: {n}")
+
         torch.nn.utils.clip_grad_norm_(self.tem.parameters(), 1.0)
         self.optimizer.step()
 
