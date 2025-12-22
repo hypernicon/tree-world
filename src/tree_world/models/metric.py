@@ -286,7 +286,7 @@ class PseudoMetric(torch.nn.Module):
         bounded: bool = False,
     ):
         # learned positive step
-        scale = scale + eps  # (B,S,E)
+        scale = scale.clamp_min(eps)  # (B,S,E)
 
         W = self.metric.weight  # (M,E)
 
@@ -295,7 +295,7 @@ class PseudoMetric(torch.nn.Module):
             y0 = atanh(center_c)  # (B,S,E)
 
             # Jacobian diag at center: d tanh / dy = 1 - tanh(y)^2 = 1 - center^2
-            col_scale = (1.0 - center_c.square()).clamp_min(eps)
+            col_scale = (1.0 - center_c.square().clamp(min=eps, max=1 - eps)).clamp_min(eps)
 
             # delta distribution in y-space, zero mean
             base_delta = LowRankPlusDiagGaussian(
