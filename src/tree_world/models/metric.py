@@ -44,7 +44,7 @@ class LowRankPlusDiagGaussian(D.Distribution):
         # Flatten batch to build per-batch A and cache its Cholesky
         cs2 = col_scale.square().reshape(-1, E)  # (Bflat, E)
         Bflat = cs2.shape[0]
-
+        dtype = W.dtype
         # WWt_weighted = W diag(cs2) W^T
         # Ww[b] = W * cs2[b] (column scaling)
         Ww = W.unsqueeze(0) * cs2[:, None, :]     # (Bflat, M, E)
@@ -53,7 +53,7 @@ class LowRankPlusDiagGaussian(D.Distribution):
         I = torch.eye(M, device=W.device, dtype=W.dtype).unsqueeze(0).expand(Bflat, M, M)
         A = I + (1.0 / self.lam) * WWt            # (Bflat, M, M)
 
-        self._L = torch.linalg.cholesky(A)        # (Bflat, M, M)
+        self._L = torch.linalg.cholesky(A.float()).to(dtype)        # (Bflat, M, M)
         self._logdetA = 2.0 * torch.log(torch.diagonal(self._L, dim1=-2, dim2=-1)).sum(dim=-1)  # (Bflat,)
 
     def rsample(self, sample_shape=torch.Size()):
