@@ -374,7 +374,7 @@ class TemLocalizer(torch.nn.Module):
                 break
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
-        next_location, location_std = location_distribution.sample()
+        next_location = location_distribution.sample()
         if torch.isnan(next_location).any() or torch.isinf(next_location).any():
             print(f"next_location is nan: {next_location.isnan().float().sum()} out of {next_location.numel()}")
             print(f"next_location is inf: {next_location.isinf().float().sum()} out of {next_location.numel()}")
