@@ -35,7 +35,7 @@ class LowRankPlusDiagGaussian(D.Distribution):
         )
 
         M, E = W.shape
-        print(f"M: {M}, E: {E}")
+        dtype = W.dtype
         assert loc.shape[-1] == E, f"loc last dim {loc.shape[-1]} != W second dim {E}"
         assert col_scale.shape == loc.shape, f"col_scale {col_scale.shape} != loc {loc.shape}"
 
@@ -43,18 +43,18 @@ class LowRankPlusDiagGaussian(D.Distribution):
         self._E = E
 
         # Flatten batch to build per-batch A and cache its Cholesky
-        cs2 = col_scale.square().reshape(-1, E)  # (Bflat, E)
+        cs2 = col_scale.square().reshape(-1, E)          # (Bflat,E)
         Bflat = cs2.shape[0]
-        dtype = W.dtype
-        # WWt_weighted = W diag(cs2) W^T
-        # Ww[b] = W * cs2[b] (column scaling)
-        Ww = W.unsqueeze(0) * cs2[:, None, :]     # (Bflat, M, E)
-        WWt = Ww @ W.t()                          # (Bflat, M, M)
+
+        # WWt_weighted[b] = W diag(cs2[b]) W^T  (Bflat,M,M) without (Bflat,M,E) temp
+        WWt = torch.einsum('me,be,ne->bmn', W, cs2, W)
 
         I = torch.eye(M, device=W.device, dtype=W.dtype).unsqueeze(0).expand(Bflat, M, M)
-        A = I + (1.0 / self.lam) * WWt            # (Bflat, M, M)
+        A = (I + (1.0 / self.lam) * WWt).float()
 
-        self._L = torch.linalg.cholesky(A.float()).to(dtype)        # (Bflat, M, M)
+        self._L = torch.linalg.cholesky(A).to(dtype)        # (Bflat, M, M)
+        del A
+        
         self._logdetA = 2.0 * torch.log(torch.diagonal(self._L, dim1=-2, dim2=-1)).sum(dim=-1)  # (Bflat,)
 
     def rsample(self, sample_shape=torch.Size()):
