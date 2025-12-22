@@ -197,23 +197,9 @@ class MetricSampler(torch.nn.Module):
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
 
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
-
-        qk_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
-        assert torch.isfinite(qk_weights).all()
-        assert not torch.isnan(qk_weights).any()
-        assert qk_weights.max(dim=-1).values.min() > 0.0
-
-        # uniform sample for invalid rows... we'll fix this later
-        qk_weights = qk_weights.masked_fill(invalid_mask, 1.0 / S)
+        qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
         
-        qk_categorical = D.Categorical(probs=qk_weights)
-        # sampler = D.Independent(
-        #     D.Normal(
-        #         loc=value[:, None, :, :].expand(-1, T, -1, -1), 
-        #         scale=value_std[:, None, :, :].expand(-1, T, -1, -1) + 1e-8
-        #     ), 
-        #     1
-        # )
+        qk_categorical = D.Categorical(logits=-0.5 * qk_distances)
         sampler = self.v_metric.build_distribution_with_center(
             center=value[:, None, :, :].expand(-1, T, -1, -1),
             scale=value_std[:, None, :, :].expand(-1, T, -1, -1),
