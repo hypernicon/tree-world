@@ -162,16 +162,8 @@ class RandomTemTAgent(AgentModel):
         print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss).abs() / len(self.displacement_loss))}")
         sys.stdout.flush()
         self.optimizer.zero_grad()
+        torch.autograd.set_detect_anomaly(True)
         (sum(self.loss) / len(self.loss)).backward()
-        for n, p in self.tem.named_parameters():
-            if p is None: 
-                continue
-            if torch.isnan(p).any() or torch.isinf(p).any():
-                print(f"Param gradient blew up: {n} {p.grad.shape} {p.grad.abs().max().item()}")
-            else:
-                print(f"Param gradient is fine: {n} {p.grad.shape} {p.grad.abs().max().item()}")
-
-        torch.nn.utils.clip_grad_norm_(self.tem.parameters(), 1.0)
         self.optimizer.step()
 
         assert_params_finite(self.tem)
