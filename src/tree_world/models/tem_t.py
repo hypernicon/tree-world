@@ -418,7 +418,7 @@ class TemLocalizer(torch.nn.Module):
             print(f"sensory_weights: {sensory_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_predicted: {sensory_predicted[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_invalid_mask: {sensory_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
-            print(f"sensory_std: {sensory_std[0,:4, :100].detach().cpu().numpy().tolist()}")
+            print(f"sensory_std: {sensory_std[0,:4, :100].detach().cpu().float().numpy().tolist()}")
             raise ValueError("sensory_logprobs is nan")
 
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
@@ -427,7 +427,7 @@ class TemLocalizer(torch.nn.Module):
 
         if not (kl_divergence >= 0.0).all():
             print(f"kl_divergence is negative: {kl_divergence[kl_divergence < 0.0].shape}")
-            print(f"kl_divergence: {kl_divergence.detach().cpu().numpy().tolist()}")
+            print(f"kl_divergence: {kl_divergence.detach().cpu().float().numpy().tolist()}")
         elbo = sensory_logprobs - kl_divergence.mean()
 
         return next_location, geometric_location, sensory_predicted, elbo, sensory_error.mean(), location_disagreement.mean(), displacement_loss
