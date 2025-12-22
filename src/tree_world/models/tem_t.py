@@ -163,10 +163,9 @@ class MetricSampler(torch.nn.Module):
     
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
                 close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0):
-        B, T, D = query.shape
-        B, S, D = key.shape
+        B, T, _ = query.shape
+        B, S, _ = key.shape
         B, S, E = value.shape
-        assert D == self.qk_dim
 
         # op_norm = self.qk_metric.metric_operator_norm()
         # scale = self.scale_factor ** 0.5 / (op_norm ** 0.5 + 1e-8)
@@ -205,7 +204,7 @@ class MetricSampler(torch.nn.Module):
         sampler = D.Independent(
             D.Normal(
                 loc=value[:, None, :, :].expand(-1, T, -1, -1), 
-                scale=value_std[:, None, :, :].expand(-1, T, -1, -1)
+                scale=value_std[:, None, :, :].expand(-1, T, -1, -1) + 1e-8
             ), 
             1
         )
