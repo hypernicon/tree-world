@@ -320,7 +320,7 @@ class TemLocalizer(torch.nn.Module):
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
-                max_steps: int=4, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: int=0):
+                max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: int=0):
         assert max_steps > 0
 
         B, T, S = sensory.shape
