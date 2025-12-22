@@ -7,6 +7,11 @@ from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .metric import PseudoMetric
 
 
+def atanh(x):
+    # numerically stable atanh
+    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+
 def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
     deltas = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)
 
@@ -152,7 +157,7 @@ class TemTransformerLayer(torch.nn.Module):
 
 
 class MetricSampler(torch.nn.Module):
-    def __init__(self, qk_metric: PseudoMetric, v_metric: PseudoMetric, v_error_mlp: ErrorMLP, qk_dim: int):
+    def __init__(self, qk_metric: PseudoMetric, v_metric: PseudoMetric, v_error_mlp: ErrorMLP, qk_dim: int, bounded: bool=False):
         super().__init__()
         self.qk_metric = qk_metric
         self.v_metric = v_metric
@@ -160,6 +165,7 @@ class MetricSampler(torch.nn.Module):
         self.qk_dim = qk_dim
 
         self.scale_factor = qk_dim ** -0.5
+        self.bounded = bounded
     
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
                 close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0):
@@ -201,12 +207,17 @@ class MetricSampler(torch.nn.Module):
         qk_weights = qk_weights.masked_fill(invalid_mask, 1.0 / S)
         
         qk_categorical = D.Categorical(probs=qk_weights)
-        sampler = D.Independent(
-            D.Normal(
-                loc=value[:, None, :, :].expand(-1, T, -1, -1), 
-                scale=value_std[:, None, :, :].expand(-1, T, -1, -1) + 1e-8
-            ), 
-            1
+        # sampler = D.Independent(
+        #     D.Normal(
+        #         loc=value[:, None, :, :].expand(-1, T, -1, -1), 
+        #         scale=value_std[:, None, :, :].expand(-1, T, -1, -1) + 1e-8
+        #     ), 
+        #     1
+        # )
+        sampler = self.v_metric.build_distribution_with_center(
+            center=value,
+            scale=value_std,
+            bounded=self.bounded
         )
         dist = D.MixtureSameFamily(qk_categorical, sampler)
         
@@ -309,8 +320,12 @@ class TemLocalizer(torch.nn.Module):
         self.location_error_mlp = ErrorMLP(location_dim, location_dim)
         self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim)
 
-        self.location_refiner = MetricSampler(self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim)
-        self.sensory_predictor = MetricSampler(self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim)
+        self.location_refiner = MetricSampler(
+            self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim, bounded=True
+        )
+        self.sensory_predictor = MetricSampler(
+            self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim, bounded=False
+        )
 
         self.geometric_action_decoder = GeometricActionDecoder(
             location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
@@ -362,7 +377,7 @@ class TemLocalizer(torch.nn.Module):
         for k in range(max_steps):
             location_std = self.location_error_mlp(sensory_location)
             location_distribution, location_invalid_mask = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, torch.tanh(sensory_location), location_std,
+                sensory_plus_geometric, sensory_plus_geometric, sensory_location, location_std,
                 close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
@@ -378,7 +393,6 @@ class TemLocalizer(torch.nn.Module):
         if torch.isnan(next_location).any() or torch.isinf(next_location).any():
             print(f"next_location is nan: {next_location.isnan().float().sum()} out of {next_location.numel()}")
             print(f"next_location is inf: {next_location.isinf().float().sum()} out of {next_location.numel()}")
-            print(f"location_weights: {location_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
             raise ValueError("next_location is nan")
 
@@ -394,7 +408,6 @@ class TemLocalizer(torch.nn.Module):
         if torch.isnan(kl_divergence).any() or torch.isinf(kl_divergence).any():
             print(f"kl_divergence is nan: {kl_divergence.isnan().float().sum()} out of {kl_divergence.numel()}")
             print(f"kl_divergence is inf: {kl_divergence.isinf().float().sum()} out of {kl_divergence.numel()}")
-            print(f"location_weights: {location_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"next_location: {next_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_location: {sensory_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
@@ -415,7 +428,6 @@ class TemLocalizer(torch.nn.Module):
         if torch.isnan(sensory_logprobs).any() or torch.isinf(sensory_logprobs).any():
             print(f"sensory_logprobs is nan: {sensory_logprobs.isnan().float().sum()} out of {sensory_logprobs.numel()}")
             print(f"sensory_logprobs is inf: {sensory_logprobs.isinf().float().sum()} out of {sensory_logprobs.numel()}")
-            print(f"sensory_weights: {sensory_weights[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_predicted: {sensory_predicted[0,:4, :10].detach().float().cpu().numpy().tolist()}")
             print(f"sensory_invalid_mask: {sensory_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
             print(f"sensory_std: {sensory_std[0,:4, :100].detach().cpu().float().numpy().tolist()}")
