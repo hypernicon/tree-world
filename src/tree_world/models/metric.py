@@ -35,6 +35,7 @@ class LowRankPlusDiagGaussian(D.Distribution):
         )
 
         M, E = W.shape
+        print(f"M: {M}, E: {E}")
         assert loc.shape[-1] == E, f"loc last dim {loc.shape[-1]} != W second dim {E}"
         assert col_scale.shape == loc.shape, f"col_scale {col_scale.shape} != loc {loc.shape}"
 
