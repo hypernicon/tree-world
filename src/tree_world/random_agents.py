@@ -8,6 +8,14 @@ from tree_world.simulation import AgentModel
 from tree_world.models.tem_t import TemLocalizer, TemTransformerLayer
 
 
+def assert_params_finite(model):
+    for n, p in model.named_parameters():
+        if p is None: 
+            continue
+        if torch.isnan(p).any() or torch.isinf(p).any():
+            raise RuntimeError(f"Param blew up: {n}")
+
+
 class RandomTemTAgent(AgentModel):
     def __init__(
         self, 
@@ -157,6 +165,9 @@ class RandomTemTAgent(AgentModel):
         (sum(self.loss) / len(self.loss)).backward()
         torch.nn.utils.clip_grad_norm_(self.tem.parameters(), 1.0)
         self.optimizer.step()
+
+        assert_params_finite(self.tem)
+
         self.loss = []
         self.loc_loss = []
         self.sens_loss = []
