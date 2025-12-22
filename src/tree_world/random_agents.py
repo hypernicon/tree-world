@@ -63,6 +63,7 @@ class RandomTemTAgent(AgentModel):
         self.rewards = []
 
         self.prefix_length = 0
+        torch.autograd.set_detect_anomaly(True)
 
     def reset(self):
         self.t = 0
@@ -162,7 +163,6 @@ class RandomTemTAgent(AgentModel):
         print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss).abs() / len(self.displacement_loss))}")
         sys.stdout.flush()
         self.optimizer.zero_grad()
-        torch.autograd.set_detect_anomaly(True)
         (sum(self.loss) / len(self.loss)).backward()
         self.optimizer.step()
 
