@@ -83,7 +83,8 @@ class LowRankPlusDiagGaussian(D.Distribution):
         # Flatten batch for cached chol(A)
         loc = self.loc.reshape(-1, E)             # (Bflat, E)
         cs = self.col_scale.reshape(-1, E)        # (Bflat, E)
-        L, _ = _build_A_and_cholesky(self.W, cs, self.lam)
+        lam_t = torch.as_tensor(self.lam, device=self.loc.device, dtype=self.loc.dtype)
+        L, _ = _build_A_and_cholesky(self.W, cs, lam_t)
         Bflat = loc.shape[0]
 
         # z ~ N(0, (s^2/lam) I_E)
