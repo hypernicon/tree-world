@@ -7,9 +7,11 @@ from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .metric import PseudoMetric
 
 
-def atanh(x):
-    # numerically stable atanh
-    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+def check_nan_inf(name, t):
+    if torch.isnan(t).any() or torch.isinf(t).any():
+        print(f"{name} BAD: nan={torch.isnan(t).any().item()} inf={torch.isinf(t).any().item()}")
+        print(f"{name} stats: min={t.nan_to_num().min().item()} max={t.nan_to_num().max().item()}")
+        raise ValueError(f"{name} is nan/inf")
 
 
 def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
@@ -178,12 +180,7 @@ class MetricSampler(torch.nn.Module):
         scale = self.scale_factor ** 0.5
 
         qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
-        if qk_distances.isnan().any():
-            print(f"qk_distances is nan: {qk_distances.isnan().float().sum()} out of {qk_distances.numel()}")
-            print(f"query: {query[0,:4, :10].detach().float().cpu().numpy().tolist()}")
-            print(f"key: {key[0,:4, :10].detach().float().cpu().numpy().tolist()}")
-            print(f"scale: {scale}")
-            raise ValueError("qk_distances is nan")
+        check_nan_inf("qk_distances", qk_distances)
 
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
@@ -346,12 +343,14 @@ class TemLocalizer(torch.nn.Module):
             )], dim=1)
 
         sensory_location = prior_location
+        check_nan_inf("prior_location", prior_location)
 
         geometric_location, displacement_loss = self.geometric_action_decoder(
             prior_location[:, prefix_length:], action, allow_extension=False, regularize=True
         ) # <-- we've already extended the action sequence
         geometric_location = torch.cat([prior_location[:, :prefix_length], geometric_location], dim=1)
-        sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient     
+        sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient 
+        check_nan_inf("sensory_plus_geometric", sensory_plus_geometric)
         
         # if sensory_key_prefix is not None and location_prefix is not None:
         #     sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
@@ -377,11 +376,7 @@ class TemLocalizer(torch.nn.Module):
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
         next_location = location_distribution.sample()
-        if torch.isnan(next_location).any() or torch.isinf(next_location).any():
-            print(f"next_location is nan: {next_location.isnan().float().sum()} out of {next_location.numel()}")
-            print(f"next_location is inf: {next_location.isinf().float().sum()} out of {next_location.numel()}")
-            print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
-            raise ValueError("next_location is nan")
+        check_nan_inf("next_location", next_location) 
 
         geometric_logprobs = self.geometric_action_decoder.logprobs(
             next_location[:, prefix_length:], geometric_location[:, prefix_length:]
@@ -392,13 +387,7 @@ class TemLocalizer(torch.nn.Module):
         mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask[:, prefix_length:]
         kl_divergence = kl_divergence.masked_fill(mask, 0.0)
         kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-8)
-        if torch.isnan(kl_divergence).any() or torch.isinf(kl_divergence).any():
-            print(f"kl_divergence is nan: {kl_divergence.isnan().float().sum()} out of {kl_divergence.numel()}")
-            print(f"kl_divergence is inf: {kl_divergence.isinf().float().sum()} out of {kl_divergence.numel()}")
-            print(f"next_location: {next_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
-            print(f"sensory_location: {sensory_location[0,:4, :10].detach().float().cpu().numpy().tolist()}")
-            print(f"location_invalid_mask: {location_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
-            raise ValueError("kl_divergence is nan")
+        check_nan_inf("kl_divergence", kl_divergence)
 
         sensory_std = self.sensory_error_mlp(next_location)
         sensory_distribution, sensory_invalid_mask = self.sensory_predictor(
@@ -413,13 +402,7 @@ class TemLocalizer(torch.nn.Module):
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
         sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
         sensory_logprobs = sensory_logprobs.mean()
-        if torch.isnan(sensory_logprobs).any() or torch.isinf(sensory_logprobs).any():
-            print(f"sensory_logprobs is nan: {sensory_logprobs.isnan().float().sum()} out of {sensory_logprobs.numel()}")
-            print(f"sensory_logprobs is inf: {sensory_logprobs.isinf().float().sum()} out of {sensory_logprobs.numel()}")
-            print(f"sensory_predicted: {sensory_predicted[0,:4, :10].detach().float().cpu().numpy().tolist()}")
-            print(f"sensory_invalid_mask: {sensory_invalid_mask[0,:4].detach().cpu().numpy().tolist()}")
-            print(f"sensory_std: {sensory_std[0,:4, :100].detach().cpu().float().numpy().tolist()}")
-            raise ValueError("sensory_logprobs is nan")
+        check_nan_inf("sensory_logprobs", sensory_logprobs)
 
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
         sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
