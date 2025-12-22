@@ -78,7 +78,7 @@ class LowRankPlusDiagGaussian(D.Distribution):
         y = cz @ self.W.t() + eps                 # sample+(Bflat,M)
 
         # alpha = A^{-1} (y/lam)
-        alpha = torch.cholesky_solve((y / lam).unsqueeze(-1), L.unsqueeze(0)).squeeze(-1)  # sample+(Bflat,M)
+        alpha = torch.cholesky_solve((y / lam).unsqueeze(-1).float(), L.unsqueeze(0).float()).squeeze(-1).to(dtype)  # sample+(Bflat,M)
 
         # delta = z - cs ⊙ (W^T alpha)
         Wt_alpha = alpha @ self.W                 # sample+(Bflat,E)
