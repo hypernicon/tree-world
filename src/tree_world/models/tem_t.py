@@ -241,7 +241,7 @@ class GeometricActionDecoder(torch.nn.Module):
         self.K_dagger = torch.nn.Buffer(K_dagger)
         self.K = torch.nn.Buffer(K)
 
-        self.error_mlp = ErrorMLP(location_dim)
+        self.error_mlp = ErrorMLP(location_dim, location_dim)
 
         assert self.location_dim % (2 * self.physical_dim) == 0
 
@@ -308,7 +308,7 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
 
         self.location_error_mlp = ErrorMLP(location_dim, location_dim)
-        self.sensory_error_mlp = ErrorMLP(location_dim,sensory_dim)
+        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim)
 
         self.location_refiner = MetricSampler(self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim)
         self.sensory_predictor = MetricSampler(self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim)
