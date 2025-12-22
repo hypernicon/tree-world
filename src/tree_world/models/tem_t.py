@@ -215,8 +215,8 @@ class MetricSampler(torch.nn.Module):
         #     1
         # )
         sampler = self.v_metric.build_distribution_with_center(
-            center=value,
-            scale=value_std,
+            center=value[:, None, :, :].expand(-1, T, -1, -1),
+            scale=value_std[:, None, :, :].expand(-1, T, -1, -1),
             bounded=self.bounded
         )
         dist = D.MixtureSameFamily(qk_categorical, sampler)
