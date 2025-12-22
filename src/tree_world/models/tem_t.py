@@ -427,7 +427,7 @@ class TemLocalizer(torch.nn.Module):
 
         if not (kl_divergence >= 0.0).all():
             print(f"kl_divergence is negative: {kl_divergence[kl_divergence < 0.0].shape}")
-            print(f"kl_divergence: {kl_divergence[0,:4].detach().cpu().numpy().tolist()}")
+            print(f"kl_divergence: {kl_divergence.detach().cpu().numpy().tolist()}")
         elbo = sensory_logprobs - kl_divergence.mean()
 
         return next_location, geometric_location, sensory_predicted, elbo, sensory_error.mean(), location_disagreement.mean(), displacement_loss
