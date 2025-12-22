@@ -106,7 +106,7 @@ class LowRankPlusDiagGaussian(D.Distribution):
         out = loc.unsqueeze(0) + delta            # sample+(Bflat,E)
         return out.reshape(sample_shape + self.batch_shape + (E,))
 
-    def _log_prob_core(value, loc, W, col_scale, lam_t, s_t):
+    def _log_prob_core(self, value, loc, W, col_scale, lam_t, s_t):
         """
         value, loc: (Bflat,E)
         W:          (M,E)
