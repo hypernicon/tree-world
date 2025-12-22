@@ -10,6 +10,33 @@ def atanh(x):
     return 0.5 * (torch.log1p(x) - torch.log1p(-x))
 
 
+def _build_A_and_cholesky(W, cs2, lam):
+    """
+    W:   (M,E)
+    cs2: (Bflat,E)
+    lam: scalar tensor
+    returns:
+      L: (Bflat,M,M)  Cholesky of A = I + (1/lam) W diag(cs2) W^T
+      logdetA: (Bflat,)
+    """
+    M, E = W.shape
+    Bflat = cs2.shape[0]
+    dtype = W.dtype
+    device = W.device
+
+    # WWt = W diag(cs2[b]) W^T  -> (Bflat,M,M)
+    # compute in fp32 for stability, but keep memory bounded (no Ww temp)
+    WWt = torch.einsum('me,be,ne->bmn', W.float(), cs2.float(), W.float())  # fp32
+
+    I = torch.eye(M, device=device, dtype=torch.float32).unsqueeze(0).expand(Bflat, M, M)
+    A = I + (1.0 / lam.float()) * WWt  # fp32
+
+    L = torch.linalg.cholesky(A)  # fp32
+    logdetA = 2.0 * torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(dim=-1)  # fp32
+
+    return L.to(dtype), logdetA.to(dtype)
+
+
 class LowRankPlusDiagGaussian(D.Distribution):
     """
     x ~ N(loc, s^2 * (lam I + (W diag(col_scale))^T (W diag(col_scale)))^-1)
@@ -20,6 +47,11 @@ class LowRankPlusDiagGaussian(D.Distribution):
     """
     support = D.constraints.real
     has_rsample = True
+    arg_constraints = {
+        'loc': D.constraints.real, 
+        'W': D.constraints.real, 
+        'col_scale': D.constraints.real, 
+    }
 
     def __init__(self, loc, W, col_scale, s=1.0, lam=1e-3, validate_args=None):
         self.loc = loc
@@ -42,21 +74,6 @@ class LowRankPlusDiagGaussian(D.Distribution):
         self._M = M
         self._E = E
 
-        # Flatten batch to build per-batch A and cache its Cholesky
-        cs2 = col_scale.square().reshape(-1, E)          # (Bflat,E)
-        Bflat = cs2.shape[0]
-
-        # WWt_weighted[b] = W diag(cs2[b]) W^T  (Bflat,M,M) without (Bflat,M,E) temp
-        WWt = torch.einsum('me,be,ne->bmn', W, cs2, W)
-
-        I = torch.eye(M, device=W.device, dtype=W.dtype).unsqueeze(0).expand(Bflat, M, M)
-        A = (I + (1.0 / self.lam) * WWt).float()
-
-        self._L = torch.linalg.cholesky(A).to(dtype)        # (Bflat, M, M)
-        del A
-        
-        self._logdetA = 2.0 * torch.log(torch.diagonal(self._L, dim1=-2, dim2=-1)).sum(dim=-1)  # (Bflat,)
-
     def rsample(self, sample_shape=torch.Size()):
         device = self.loc.device
         dtype = self.loc.dtype
@@ -66,7 +83,7 @@ class LowRankPlusDiagGaussian(D.Distribution):
         # Flatten batch for cached chol(A)
         loc = self.loc.reshape(-1, E)             # (Bflat, E)
         cs = self.col_scale.reshape(-1, E)        # (Bflat, E)
-        L = self._L                               # (Bflat, M, M)
+        L, _ = _build_A_and_cholesky(self.W, cs, self.lam)
         Bflat = loc.shape[0]
 
         # z ~ N(0, (s^2/lam) I_E)
@@ -88,24 +105,43 @@ class LowRankPlusDiagGaussian(D.Distribution):
         out = loc.unsqueeze(0) + delta            # sample+(Bflat,E)
         return out.reshape(sample_shape + self.batch_shape + (E,))
 
-    def log_prob(self, value):
-        E = self._E
-        M = self._M
-        lam, s = self.lam, self.s
+    def _log_prob_core(value, loc, W, col_scale, lam_t, s_t):
+        """
+        value, loc: (Bflat,E)
+        W:          (M,E)
+        col_scale:  (Bflat,E)
+        lam_t, s_t: scalar tensors (on same device)
+        returns:    (Bflat,)
+        """
+        M, E = W.shape
+        x = value - loc                       # (Bflat,E)
+        cs2 = col_scale.square()              # (Bflat,E)
 
-        x = (value - self.loc).reshape(-1, E)          # (Bflat,E)
-        cs = self.col_scale.reshape(-1, E)             # (Bflat,E)
+        L, logdetA = _build_A_and_cholesky(W, cs2, lam_t)
 
-        cx = cs * x                                     # (Bflat,E)
-        Wx = cx @ self.W.t()                             # (Bflat,M)
+        # quad = (lam||x||^2 + ||W (c⊙x)||^2) / s^2
+        cx = col_scale * x                    # (Bflat,E)
+        Wx = cx @ W.t()                       # (Bflat,M)
+        quad = (lam_t * (x * x).sum(dim=-1) + (Wx * Wx).sum(dim=-1)) / (s_t * s_t)
 
-        quad = (lam * (x * x).sum(dim=-1) + (Wx * Wx).sum(dim=-1)) / (s * s)  # (Bflat,)
-
-        # logdet precision = [E log lam + logdet(I + (1/lam) W diag(cs^2) W^T)] - 2E log s
-        logdet_prec = (E * math.log(lam) + self._logdetA) - 2.0 * E * math.log(s)
+        # logdet precision = [E log lam + logdetA] - 2E log s
+        logdet_prec = (E * torch.log(lam_t) + logdetA) - 2.0 * E * torch.log(s_t)
 
         lp = 0.5 * (logdet_prec - quad - E * math.log(2.0 * math.pi))
-        return lp.reshape(self.batch_shape)
+        return lp
+    
+    def log_prob(self, value):
+        E = self._E
+
+        value_f = value.reshape(-1, E)
+        loc_f   = self.loc.reshape(-1, E)
+        cs_f    = self.col_scale.reshape(-1, E)
+
+        lam_t = torch.as_tensor(self.lam, device=value.device, dtype=value.dtype)
+        s_t   = torch.as_tensor(self.s,   device=value.device, dtype=value.dtype)
+
+        lp_f = torch.utils.checkpoint.checkpoint(self._log_prob_core, value_f, loc_f, self.W, cs_f, lam_t, s_t, use_reentrant=False)
+        return lp_f.reshape(self.batch_shape)
 
 
 class PseudoMetric(torch.nn.Module):

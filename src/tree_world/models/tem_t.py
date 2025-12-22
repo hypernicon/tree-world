@@ -367,7 +367,8 @@ class TemLocalizer(torch.nn.Module):
                 close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
-            sensory_location = location_distribution.sample()
+            with torch.no_grad():
+                sensory_location = location_distribution.sample()
 
             location_disagreement = self.location_metric.psuedo_distance(geometric_location, sensory_location)
 
@@ -404,7 +405,8 @@ class TemLocalizer(torch.nn.Module):
             next_location, next_location, sensory, sensory_std
         )
 
-        sensory_predicted = sensory_distribution.sample()
+        with torch.no_grad():
+            sensory_predicted = sensory_distribution.sample()
 
         sensory_logprobs = sensory_distribution.log_prob(sensory_predicted)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
