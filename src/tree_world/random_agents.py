@@ -167,8 +167,9 @@ class RandomTemTAgent(AgentModel):
             if p is None: 
                 continue
             if torch.isnan(p).any() or torch.isinf(p).any():
-                print(f"Param gradient blew up: {n}")
-                raise RuntimeError(f"Param blew up: {n}")
+                print(f"Param gradient blew up: {n} {p.grad.shape} {p.grad.abs().max().item()}")
+            else:
+                print(f"Param gradient is fine: {n} {p.grad.shape} {p.grad.abs().max().item()}")
 
         torch.nn.utils.clip_grad_norm_(self.tem.parameters(), 1.0)
         self.optimizer.step()
