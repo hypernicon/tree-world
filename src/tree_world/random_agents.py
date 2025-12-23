@@ -47,6 +47,8 @@ class RandomTemTAgent(AgentModel):
         self.beta = beta
         self.dim = dim
 
+        self.dataset = []
+
         self.use_cuda = torch.cuda.is_available()
         if self.use_cuda:
             print("Moving TEM-t model to cuda")
@@ -63,6 +65,7 @@ class RandomTemTAgent(AgentModel):
         self.rewards = []
 
         self.prefix_length = 0
+        self.data_frequency = 10
         torch.autograd.set_detect_anomaly(True)
 
     def reset(self):
@@ -73,6 +76,8 @@ class RandomTemTAgent(AgentModel):
         self.loc_loss = []
         self.sens_loss = []
         self.displacement_loss = []
+
+        self.dataset = []
 
         self.last_location = None
         self.last_action = None
@@ -86,8 +91,11 @@ class RandomTemTAgent(AgentModel):
         if self.use_cuda:
             torch.cuda.empty_cache()
 
+    @torch.no_grad()
     def get_action(self, distance: float, embedding: torch.Tensor, heading: torch.Tensor, health: float,
                    agent_location: torch.Tensor=None, obj_location: torch.Tensor=None, reward: float=0.0):
+
+        self.tem.eval()
 
         if self.last_action is not None:
             last_action = torch.stack(self.last_action, dim=1).requires_grad_().detach()
@@ -111,6 +119,14 @@ class RandomTemTAgent(AgentModel):
             #     self.last_location = self.last_location.to("cuda").to(self.dtype)
             if last_action is not None:
                 last_action = last_action.to("cuda").to(self.dtype)
+        
+        if self.t % self.data_frequency == self.data_frequency - 1:
+            self.dataset.append((
+                self.last_sensory.detach().clone(), 
+                self.last_location.detach().clone(), 
+                self.last_action.detach().clone(), 
+                self.prefix_length
+            ))
 
         next_location, sensory_location, sensory_predicted, elbo, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
@@ -132,10 +148,10 @@ class RandomTemTAgent(AgentModel):
         self.last_location = next_location.detach().requires_grad_()
         self.location_history = sensory_location.detach()
         self.actual_location_history.append(agent_location)
-        self.loss.append(-elbo + self.beta * displacement_loss)
-        self.loc_loss.append(location_disagreement)
-        self.sens_loss.append(sensory_error)
-        self.displacement_loss.append(displacement_loss)
+        # self.loss.append(-elbo + self.beta * displacement_loss)
+        # self.loc_loss.append(location_disagreement)
+        # self.sens_loss.append(sensory_error)
+        # self.displacement_loss.append(displacement_loss)
 
         if torch.torch.is_tensor(sensory_error):
             sensory_error = sensory_error.item()
@@ -156,22 +172,58 @@ class RandomTemTAgent(AgentModel):
 
         return position_delta, new_heading
 
-    def train(self, epoch: int=None):
-        loss_sum = sum(self.loss)
-        print(f"Epoch {epoch} Step {self.t}: Taking an optimizer step with {len(self.loss)} loss values: {math.copysign(1.0, loss_sum) * math.sqrt(loss_sum.abs() / len(self.loss))}", end="")
-        print(f" loc_loss: {math.sqrt(sum(self.loc_loss) / len(self.loc_loss))} sens_loss: {math.sqrt(sum(self.sens_loss).abs() / len(self.sens_loss))}", end="")
-        print(f" displacement_loss: {math.sqrt(sum(self.displacement_loss).abs() / len(self.displacement_loss))}")
+    def rerun_for_training(self, epoch: int=None):
+        dtype = self.dataset[0][0].dtype
+        device = self.dataset[0][0].device
+
+        sensory_lengths = torch.tensor([p[0].shape[1] for p in self.dataset], dtype=torch.long, device=device)
+        location_lengths = torch.tensor([p[1].shape[1] for p in self.dataset], dtype=torch.long, device=device)
+        action_lengths = torch.tensor([p[2].shape[1] for p in self.dataset], dtype=torch.long, device=device)
+
+        sensory_context_length = sensory_lengths.max()
+        location_context_length = location_lengths.max()
+        action_context_length = action_lengths.max()
+
+        sensory = torch.cat([
+            torch.cat([p[0], torch.zeros(1, sensory_context_length - p[0].shape[1], p[0].shape[2], dtype=dtype, device=device)], dim=1)
+            for p in self.dataset
+        ], dim=0)
+        locations = torch.cat([
+            torch.cat([p[1], torch.zeros(1, location_context_length - p[1].shape[1], p[1].shape[2], dtype=dtype, device=device)], dim=1)
+            for p in self.dataset
+        ], dim=0)
+        actions = torch.cat([
+            torch.cat([p[2], torch.zeros(1, action_context_length - p[2].shape[1], p[2].shape[2], dtype=dtype, device=device)], dim=1)
+            for p in self.dataset
+        ], dim=0)
+
+        prefix_lengths = torch.tensor([p[3] for p in self.dataset], dtype=torch.long, device=device)
+
+        _, _, _, elbo, sensory_error, location_disagreement, displacement_loss = (
+            self.tem(
+                sensory, locations, actions, prefix_length=prefix_lengths, batch_lengths=sensory_lengths
+            )
+        )
+
+        loss = -elbo + self.beta * displacement_loss
+        print(f"Epoch {epoch} Step {self.t}: Loss: {loss.item():.3f} ELBO: {elbo.item():.3f} ", end="")
+        print(f"Displacement Loss: {displacement_loss.item():.3f} Sensory Error: {sensory_error.item():.3f} ", end="")
+        print(f"Location Disagreement: {location_disagreement.item():.3f}")
         sys.stdout.flush()
+
+        return loss
+
+    def train(self, epoch: int=None):
+        self.tem.train()
+
+        loss = self.rerun_for_training()
         self.optimizer.zero_grad()
-        (sum(self.loss) / len(self.loss)).backward()
+        loss.backward()
         self.optimizer.step()
 
         assert_params_finite(self.tem)
 
-        self.loss = []
-        self.loc_loss = []
-        self.sens_loss = []
-        self.displacement_loss = []
+        self.dataset = []
 
         if self.last_location.shape[1] > self.context_window + self.buffer:
             self.prune()

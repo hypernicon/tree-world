@@ -2,7 +2,7 @@ import math
 import torch
 import torch.distributions as D
 
-from typing import Optional
+from typing import Optional, Union
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .metric import PseudoMetric
 
@@ -316,11 +316,39 @@ class TemLocalizer(torch.nn.Module):
 
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
-    def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
-                max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: int=0):
-        assert max_steps > 0
+    def remove_prefix(self, tensor: torch.Tensor, prefix_length: torch.Tensor, batch_lengths: torch.Tensor):
+        """
+        Extract a new tensor that starts at the given prefix length and runs to the end of the tensor
+        """
+        B = tensor.shape[0]
+        actual_lengths = batch_lengths - prefix_length
+        S = actual_lengths.max()
+        indices = torch.arange(S, device=tensor.device)[:, None] + prefix_length[None, :]
+        while indices.ndim < tensor.ndim:
+            indices = indices.unsqueeze(-1)
+        indices = indices.expand(B, S, *tensor.shape[2:])
+        return tensor.gather(dim=1, index=indices), indices
+    
+    def restore_prefix(self, original: torch.Tensor, extracted: torch.Tensor, indices: torch.Tensor):
+        """
+        Restore the prefix to the original tensor
+        """
+        return original.scatter(dim=1, index=indices, src=extracted)
 
+    def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
+                max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
+                batch_lengths: Optional[torch.Tensor]=None):
         B, T, S = sensory.shape
+        assert max_steps > 0
+        if isinstance(prefix_length, int):
+            prefix_length = torch.tensor([prefix_length]*B, dtype=torch.long, device=sensory.device)
+
+        if batch_lengths is not None:
+            assert batch_lengths.shape == (B,)
+            assert (prefix_length < batch_lengths).all()
+        else:
+            batch_lengths = T * torch.ones((B,), dtype=torch.long, device=sensory.device)
+
         if prior_location is None:
             initial_location = torch.empty((B, 1, self.location_dim), dtype=sensory.dtype, device=sensory.device).uniform_(-1, 1)
             return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0, 0.0
@@ -334,10 +362,10 @@ class TemLocalizer(torch.nn.Module):
                 device=prior_location.device
             )], dim=1)
         
-        if action.shape[1] < T - prefix_length:
+        if action.shape[1] < T - prefix_length.min():
             action = torch.cat([
                 action, 
-                torch.zeros((B, T - prefix_length - action.shape[1], self.action_dim), 
+                torch.zeros((B, T - prefix_length.min() - action.shape[1], self.action_dim), 
                 dtype=action.dtype, 
                 device=action.device
             )], dim=1)
@@ -345,10 +373,11 @@ class TemLocalizer(torch.nn.Module):
         sensory_location = prior_location
         check_nan_inf("prior_location", prior_location)
 
-        geometric_location, displacement_loss = self.geometric_action_decoder(
-            prior_location[:, prefix_length:], action, allow_extension=False, regularize=True
+        prior_location_minus_prefix, prior_location_indices = self.remove_prefix(prior_location, prefix_length, batch_lengths)
+        geometric_location_minus_prefix, displacement_loss = self.geometric_action_decoder(
+            prior_location_minus_prefix, action, allow_extension=False, regularize=True
         ) # <-- we've already extended the action sequence
-        geometric_location = torch.cat([prior_location[:, :prefix_length], geometric_location], dim=1)
+        geometric_location = self.restore_prefix(prior_location, geometric_location_minus_prefix, prior_location_indices)
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient 
         check_nan_inf("sensory_plus_geometric", sensory_plus_geometric)
         
@@ -378,13 +407,21 @@ class TemLocalizer(torch.nn.Module):
         next_location = location_distribution.sample().clamp(min=-1+1e-2, max=1-1e-2)
         check_nan_inf("next_location", next_location) 
 
+        next_location_minus_prefix, _ = self.remove_prefix(next_location, prefix_length, batch_lengths)
         geometric_logprobs = self.geometric_action_decoder.logprobs(
-            next_location[:, prefix_length:], geometric_location[:, prefix_length:]
+            next_location_minus_prefix, geometric_location_minus_prefix
         )
         sensory_location_logprobs = location_distribution.log_prob(next_location).clamp(min=-1e4, max=1e4)
+        sensory_location_logprobs_minus_prefix, _ = self.remove_prefix(
+            sensory_location_logprobs, prefix_length, batch_lengths
+        )
 
-        kl_divergence = sensory_location_logprobs - geometric_logprobs
-        mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask[:, prefix_length:]
+        kl_divergence = sensory_location_logprobs_minus_prefix - geometric_logprobs
+        location_invalid_mask_minus_prefix, location_invalid_mask_indices = self.remove_prefix(
+            location_invalid_mask, prefix_length, batch_lengths
+        )
+        mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask_minus_prefix
+        mask = mask | (location_invalid_mask_indices >= batch_lengths[:, None])
         kl_divergence = kl_divergence.masked_fill(mask, 0.0)
         kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-2)
         check_nan_inf("kl_divergence", kl_divergence)
@@ -399,6 +436,7 @@ class TemLocalizer(torch.nn.Module):
 
         sensory_logprobs = sensory_distribution.log_prob(sensory_predicted).clamp(min=-1e2, max=1e2)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
+        mask = mask | (torch.arange(T, device=sensory.device)[None, :] >= batch_lengths[:, None])
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
         sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-2)
         sensory_logprobs = sensory_logprobs.mean()
