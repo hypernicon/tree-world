@@ -451,7 +451,15 @@ class TemLocalizer(torch.nn.Module):
             print(f"kl_divergence: {kl_divergence.detach().cpu().float().numpy().tolist()}")
         elbo = sensory_logprobs - kl_divergence.mean()
 
-        return next_location, geometric_location, sensory_predicted, elbo, sensory_error.mean(), location_disagreement.mean(), displacement_loss
+        return (
+            next_location.detach(), 
+            geometric_location.detach(), 
+            sensory_predicted.detach(), 
+            elbo, 
+            sensory_error.mean().detach(), 
+            location_disagreement.mean().detach(), 
+            displacement_loss
+        )
     
     def make_sensory_keys(self, location: torch.Tensor, sensory: torch.Tensor):
         return sensory + self.position_encoder(location)
