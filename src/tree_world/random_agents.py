@@ -124,7 +124,7 @@ class RandomTemTAgent(AgentModel):
             self.dataset.append((
                 self.last_sensory.detach().clone(), 
                 self.last_location.detach().clone(), 
-                self.last_action.detach().clone(), 
+                last_action.detach().clone() if last_action is not None else None, 
                 self.prefix_length
             ))
 
