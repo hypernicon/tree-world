@@ -281,8 +281,8 @@ class PseudoMetric(torch.nn.Module):
         self,
         center: torch.Tensor,           # (B,S,E)
         scale: torch.Tensor,         # (B,S,E)  learnable unconstrained
-        lam: float = 1e-3,
-        eps: float = 1e-4,
+        lam: float = 1e-2,
+        eps: float = 1e-2,
         bounded: bool = False,
     ):
         # learned positive step
