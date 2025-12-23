@@ -1,9 +1,10 @@
 import math
 import torch
+import torch.distribution as D
 
 from typing import Optional, Union
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
-from .metric import PseudoMetric, IndexedMixture
+from .metric import PseudoMetric, sample_indexed_mixture, gather_component
 
 
 def check_nan_inf(name, t):
@@ -29,6 +30,72 @@ def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: 
     result = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
     result = result.transpose(1, 2).reshape(B, T, -1)
     return result
+
+
+class IndexedGaussianMixture:
+    """
+    Mixture that samples only the chosen component.
+
+    logits: (..., S)
+    params: any tensors with an S dimension aligned to logits
+    make_comp: function that takes gathered params and returns a torch.distributions.Distribution
+    """
+    def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor, bounded: bool, bounded_eps: float = 1e-2):
+        self.logits = logits
+        self.bounded = bounded
+        self.bounded_eps = bounded_eps
+
+        self.params = {"loc": loc, "scale": scale}
+    
+    def _build_distribution(self, loc: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
+        if self.bounded:
+            loc = loc.clamp(-1.0 + self.bounded_eps, 1.0 - self.bounded_eps)
+        comp = D.Independent(D.Normal(loc, scale), 1)
+        if self.bounded:
+            comp = D.TransformedDistribution(comp, D.TanhTransform(cache_size=1))
+        return comp
+
+    def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
+        # sample component indices
+        idx = sample_indexed_mixture(self.logits)  # (...,)
+        # gather params for chosen component
+        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
+        if self.bounded:
+            gathered["loc"] = gathered["loc"].clamp(-1.0 + self.bounded_eps, 1.0 - self.bounded_eps)
+
+        comp = self._build_distribution(gathered["loc"], gathered["scale"])
+        return comp.sample(sample_shape)
+
+    def rsample(self, sample_shape=torch.Size()) -> torch.Tensor:
+        idx = sample_indexed_mixture(self.logits)
+        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
+        comp = self._build_distribution(gathered["loc"], gathered["scale"])
+        return comp.rsample(sample_shape)
+
+    def log_prob(self, value: torch.Tensor, top_k: int=None) -> torch.Tensor:
+        """
+        Exact mixture log_prob computed as logsumexp over components.
+
+        comp_log_prob(value, **params) must return log_prob_x of shape (..., S)
+        """
+        # log mix probs in fp32
+        if top_k is not None and top_k < self.logits.shape[-1]:
+            top_k_logits, top_k_indices = torch.topk(self.logits.float(), dim=-1, k=top_k)
+            log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
+            center = gather_component(self.params["center"], top_k_indices, comp_dim=-2)
+            scale = gather_component(self.params["scale"], top_k_indices, comp_dim=-2)
+        else:
+            log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
+            center = self.params["center"]
+            scale = self.params["scale"]
+
+        # component log probs: (..., S)
+        v = value.unsqueeze(-2).float()
+        comp = self._build_distribution(center, scale)
+        log_px = comp.log_prob(v)              # compute in fp32 internally if needed
+
+        z = log_mix + log_px
+        return torch.logsumexp(z, dim=-1).to(log_px.dtype)
 
 
 class ErrorMLP(torch.nn.Module):
@@ -195,12 +262,12 @@ class MetricSampler(torch.nn.Module):
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
         qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 
-        dist = IndexedMixture(
+        dist = IndexedGaussianMixture(
             logits=-0.5 * qk_distances, 
-            metric=self.v_metric, 
-            center=value[:, None, :, :].expand(-1, T, -1, -1), 
+            loc=value[:, None, :, :].expand(-1, T, -1, -1), 
             scale=value_std[:, None, :, :].expand(-1, T, -1, -1), 
-            bounded=self.bounded
+            bounded=self.bounded,
+            bounded_eps=1e-2
         )
         return dist, invalid_mask.squeeze(-1)
 
