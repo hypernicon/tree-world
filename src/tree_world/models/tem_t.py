@@ -376,7 +376,6 @@ class TemLocalizer(torch.nn.Module):
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
         next_location = location_distribution.sample().clamp(min=-1+1e-2, max=1-1e-2)
-        print(f"next_location: {next_location[0,:4, :10].detach().cpu().float().numpy().tolist()}")
         check_nan_inf("next_location", next_location) 
 
         geometric_logprobs = self.geometric_action_decoder.logprobs(
@@ -387,7 +386,7 @@ class TemLocalizer(torch.nn.Module):
         kl_divergence = sensory_location_logprobs - geometric_logprobs
         mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask[:, prefix_length:]
         kl_divergence = kl_divergence.masked_fill(mask, 0.0)
-        kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-8)
+        kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-2)
         check_nan_inf("kl_divergence", kl_divergence)
 
         sensory_std = self.sensory_error_mlp(next_location)
@@ -401,13 +400,13 @@ class TemLocalizer(torch.nn.Module):
         sensory_logprobs = sensory_distribution.log_prob(sensory_predicted).clamp(min=-1e2, max=1e2)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
-        sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
+        sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-2)
         sensory_logprobs = sensory_logprobs.mean()
         check_nan_inf("sensory_logprobs", sensory_logprobs)
 
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
         sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
-        sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-8)
+        sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-2)
 
         if not (kl_divergence >= 0.0).all():
             print(f"kl_divergence is negative: {kl_divergence[kl_divergence < 0.0].shape}")
