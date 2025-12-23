@@ -29,13 +29,13 @@ def _build_A_and_cholesky(W, cs2, lam):
     device = W.device
 
     # WWt = W diag(cs2[b]) W^T  -> (Bflat,M,M)
-    # compute in fp32 for stability, but keep memory bounded (no Ww temp)
-    WWt = torch.einsum('me,be,ne->bmn', W.float(), cs2.float(), W.float())  # fp32
+    WWt = torch.mm(cs2, (W[:, None, :] * W[None, :, :]).view(M*M, E).T).view(Bflat, M, M)
+    # WWt = torch.einsum('me,be,ne->bmn', W.float(), cs2.float(), W.float())  # fp32
 
-    I = torch.eye(M, device=device, dtype=torch.float32).unsqueeze(0).expand(Bflat, M, M)
-    A = I + (1.0 / lam.float()) * WWt  # fp32
+    I = torch.eye(M, device=device, dtype=W.dtype).unsqueeze(0).expand(Bflat, M, M)
+    A = (I + (1.0 / lam) * WWt).float()  # fp32
 
-    L = torch.linalg.cholesky(A)  # fp32
+    L = torch.linalg.cholesky(A).to(dtype)  # fp32
     logdetA = 2.0 * torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(dim=-1)  # fp32
 
     return L.to(dtype), logdetA.to(dtype)
