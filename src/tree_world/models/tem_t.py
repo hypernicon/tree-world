@@ -99,12 +99,13 @@ class IndexedGaussianMixture:
 
 
 class ErrorMLP(torch.nn.Module):
-    def __init__(self, input_dim: int, output_dim: int, hidden_dim: int=128):
+    def __init__(self, input_dim: int, output_dim: int, hidden_dim: int=128, scale=1.0):
         super().__init__()
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.hidden_dim = hidden_dim
-
+        self.scale = scale
+        
         self.mlp = torch.nn.Sequential(
             torch.nn.Linear(input_dim, hidden_dim),
             torch.nn.ReLU(),
@@ -112,7 +113,7 @@ class ErrorMLP(torch.nn.Module):
         )
 
     def forward(self, x: torch.Tensor):
-        return torch.nn.functional.softplus(self.mlp(x))
+        return self.scale * torch.nn.functional.softplus(self.mlp(x))
 
 
 class TemTransformerFeedForward(torch.nn.Module):
@@ -299,7 +300,7 @@ class GeometricActionDecoder(torch.nn.Module):
         self.K_dagger = torch.nn.Buffer(K_dagger)
         self.K = torch.nn.Buffer(K)
 
-        self.error_mlp = ErrorMLP(location_dim, location_dim)
+        self.error_mlp = ErrorMLP(location_dim, location_dim, scale=10.0)
 
         assert self.location_dim % (2 * self.physical_dim) == 0
 
@@ -341,12 +342,11 @@ class GeometricActionDecoder(torch.nn.Module):
             return next_location
     
     def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor):
-        std_location = self.error_mlp(mean_location)
-        return (
-            - 0.5 * math.log(2 * math.pi) 
-            - torch.log(std_location + 1e-8).sum(dim=-1) 
-            - 0.5 * ((location - mean_location) / std_location).pow(2).sum(dim=-1)
-        )
+        scale = self.error_mlp(mean_location)
+        loc = mean_location.clamp(-1.0 + self.bounded_eps, 1.0 - self.bounded_eps)
+        comp = D.Independent(D.Normal(loc, scale), 1)
+        comp = D.TransformedDistribution(comp, D.TanhTransform(cache_size=1))
+        return comp.log_prob(location)
 
 
 class TemLocalizer(torch.nn.Module):
@@ -365,8 +365,8 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_metric = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
         self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
 
-        self.location_error_mlp = ErrorMLP(location_dim, location_dim)
-        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim)
+        self.location_error_mlp = ErrorMLP(location_dim, location_dim, scale=10.0)
+        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
 
         self.location_refiner = MetricSampler(
             self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim, bounded=True
