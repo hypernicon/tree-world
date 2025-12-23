@@ -409,7 +409,7 @@ class TemLocalizer(torch.nn.Module):
         geometric_logprobs = self.geometric_action_decoder.logprobs(
             next_location_minus_prefix, geometric_location_minus_prefix
         )
-        sensory_location_logprobs = location_distribution.log_prob(next_location).clamp(min=-1e4, max=1e4)
+        sensory_location_logprobs = location_distribution.log_prob(next_location, top_k=32).clamp(min=-1e4, max=1e4)
         sensory_location_logprobs_minus_prefix, _ = self.remove_prefix(
             sensory_location_logprobs, prefix_length, batch_lengths
         )
@@ -432,7 +432,7 @@ class TemLocalizer(torch.nn.Module):
         with torch.no_grad():
             sensory_predicted = sensory_distribution.sample()
 
-        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted).clamp(min=-1e2, max=1e2)
+        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted, top_k=32).clamp(min=-1e2, max=1e2)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
         mask = mask | (torch.arange(T, device=sensory.device)[None, :] >= batch_lengths[:, None])
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
