@@ -93,30 +93,34 @@ class EmbeddedLowRankGaussian(D.Distribution):
         x_flat = x.reshape(sample_shape + (-1, E))  # sample + (Bflat, E)
         return x_flat, sample_shape
 
-    def _intrinsic_logdet_metric(self, diag_vec: torch.Tensor) -> torch.Tensor:
+    def intrinsic_logdet_metric_chunked(self, diag_vec, chunk=256):
         """
-        diag_vec: (Bflat, E) nonnegative weights defining G = A^T diag(diag_vec) A (M×M)
-        returns: (Bflat,) logdet(G)
+        diag_vec: (N, E) float/half
+        returns: (N,) logdet(A^T diag(diag_vec) A) with jitter
         """
-        # Compute G in fp32 for stability:
-        A = self.A.float()             # (E,M)
-        At = A.T.contiguous()          # (M,E)
-        diag_f = diag_vec.float().clamp_min(self.eps_scale)      # (Bflat,E)
+        A = self.A.float()          # (E, M)
+        E, M = A.shape
+        diag_vec = diag_vec.float()
+        out = []
 
-        Bflat, E = diag_f.shape
-        M = At.shape[0]
+        for i in range(0, diag_vec.shape[0], chunk):
+            d = diag_vec[i:i+chunk].clamp_min(self.diag_floor)   # (c, E)
 
-        # Build G = At * diag_f @ A  without forming diag:
-        # (Bflat,M,E) = (1,M,E) * (Bflat,1,E)
-        Atw = At.unsqueeze(0) * diag_f.unsqueeze(1)
-        G = Atw @ A                    # (Bflat,M,M)
+            # Form G = A^T diag(d) A without (c,M,E) tensor:
+            # Compute DA = d[..., :, None] * A[None, :, :]  -> (c, E, M)
+            DA = d.unsqueeze(-1) * A.unsqueeze(0)                # (c, E, M)  <-- this is the big temp, but only 'chunk'
+            G = torch.matmul(DA.transpose(1, 2), A.unsqueeze(0))  # (c, M, M)
 
-        # Add a tiny jitter to diagonal to avoid singularities when diag_vec has zeros
-        G.diagonal(dim1=-2, dim2=-1).add_(self.chol_jitter)
+            # jitter + cholesky
+            G.diagonal(dim1=-2, dim2=-1).add_(self.chol_jitter)
+            L = torch.linalg.cholesky(G)
+            logdet = 2.0 * torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(-1)  # (c,)
+            out.append(logdet)
 
-        L = torch.linalg.cholesky(G)   # (Bflat,M,M) fp32
-        logdet = 2.0 * torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(dim=-1)  # (Bflat,)
-        return logdet.to(self.loc.dtype)
+            # free ASAP
+            del DA, G, L
+
+    return torch.cat(out, dim=0).to(self.loc.dtype)
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         """
