@@ -470,7 +470,7 @@ class TemLocalizer(torch.nn.Module):
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
         next_location = location_distribution.sample().clamp(min=-1+1e-2, max=1-1e-2)
-        if next_location.shape[0] > 1:
+        if B > 1:
             print(f"next_location: min: {next_location.min().item()}, mean: {next_location.mean().item()}, max: {next_location.max().item()}")
         check_nan_inf("next_location", next_location) 
 
@@ -501,7 +501,7 @@ class TemLocalizer(torch.nn.Module):
         with torch.no_grad():
             sensory_predicted = sensory_distribution.sample()
         
-        if sensory.shape[0] > 1:
+        if B > 1:
             print(f"sensory_predicted: min: {sensory_predicted.min().item()}, mean: {sensory_predicted.mean().item()}, max: {sensory_predicted.max().item()}")
 
         sensory_logprobs = sensory_distribution.log_prob(sensory_predicted, top_k=32)
@@ -516,7 +516,7 @@ class TemLocalizer(torch.nn.Module):
         sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
         sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-6)
 
-        if not (kl_divergence >= 0.0).all():
+        if not (kl_divergence >= 0.0).all() and B > 1:
             print(f"kl_divergence is negative: {kl_divergence[kl_divergence < 0.0].shape}")
             print(f"kl_divergence: {kl_divergence.detach().cpu().float().numpy().tolist()}")
         elbo = sensory_logprobs - kl_divergence.mean()
