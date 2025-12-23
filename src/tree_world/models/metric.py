@@ -484,6 +484,8 @@ class IndexedMixture:
             log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
             center = gather_component(self.params["center"], top_k_indices, comp_dim=-2)
             scale = gather_component(self.params["scale"], top_k_indices, comp_dim=-2)
+            print(f"shapes: {center.shape}, {scale.shape}, {log_mix.shape}")
+            print(f"vs: {self.params['center'].shape}, {self.params['scale'].shape}, {self.logits.shape}")
         else:
             log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
             center = self.params["center"]
