@@ -462,14 +462,18 @@ class IndexedMixture:
         """
         # log mix probs in fp32
         if top_k is not None:
-            top_k_logits, _ = torch.topk(self.logits.float(), dim=-1, k=top_k)
+            top_k_logits, top_k_indices = torch.topk(self.logits.float(), dim=-1, k=top_k)
             log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
+            center = gather_component(self.params["center"], top_k_indices, comp_dim=-2)
+            scale = gather_component(self.params["scale"], top_k_indices, comp_dim=-2)
         else:
             log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
+            center = self.params["center"]
+            scale = self.params["scale"]
 
         # component log probs: (..., S)
         v = value.unsqueeze(-2).float()
-        comp = self.metric.build_distribution_from_center(**self.params, **self.kwargs)
+        comp = self.metric.build_distribution_from_center(center=center, scale=scale, **self.kwargs)
         log_px = comp.log_prob(v)              # compute in fp32 internally if needed
 
         z = log_mix + log_px

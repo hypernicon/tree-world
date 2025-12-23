@@ -195,13 +195,14 @@ class MetricSampler(torch.nn.Module):
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
         qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 
-        return IndexedMixture(
+        dist = IndexedMixture(
             logits=-0.5 * qk_distances, 
             metric=self.v_metric, 
             center=value[:, None, :, :].expand(-1, T, -1, -1), 
             scale=value_std[:, None, :, :].expand(-1, T, -1, -1), 
             bounded=self.bounded
         )
+        return dist, invalid_mask.squeeze(-1)
 
 
 class GeometricActionDecoder(torch.nn.Module):
