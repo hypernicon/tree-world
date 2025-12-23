@@ -45,7 +45,7 @@ class EmbeddedLowRankGaussian(D.Distribution):
         scale: torch.Tensor,        # batch+(E,)  (can be scalar-broadcasted)
         A: Optional[torch.Tensor] = None,     # (E,M) optional; if None compute pinv(W)
         validate_args=None,
-        eps_scale: float = 1e-4,
+        eps_scale: float = 1e-3,
         chol_jitter: float = 1e-4,
     ):
         self.loc = loc
@@ -455,7 +455,7 @@ class IndexedMixture:
     make_comp: function that takes gathered params and returns a torch.distributions.Distribution
     """
     def __init__(self, logits: torch.Tensor, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, bounded: bool,
-                 clamp_eps: float = 1e-2, eps_scale: float = 1e-4, chol_jitter: float = 1e-4):
+                 clamp_eps: float = 1e-2, eps_scale: float = 1e-2, chol_jitter: float = 1e-4):
         self.logits = logits
         self.metric = metric
         self.metric.make_pseudoinverse()
