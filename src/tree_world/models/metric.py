@@ -366,7 +366,7 @@ class PseudoMetric(torch.nn.Module):
         return torch.linalg.matrix_norm(core, ord=2).to(self.metric.weight.dtype)     # (...,)
 
     def make_pseudoinverse(self):
-        W = self.metric.weight.T
+        W = self.metric.weight
         self.A = torch.linalg.pinv(W.float()).to(W.dtype)  # (E,M)
 
     def build_distribution_from_center(
@@ -379,7 +379,7 @@ class PseudoMetric(torch.nn.Module):
         chol_jitter: float = 1e-6,
     ):
         # compute right-inverse once per call
-        W = self.metric.weight.T
+        W = self.metric.weight
         if self.A is None:
             self.make_pseudoinverse()
 
