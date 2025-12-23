@@ -100,11 +100,11 @@ class EmbeddedLowRankGaussian(D.Distribution):
         """
         A = self.A.float()          # (E, M)
         E, M = A.shape
-        diag_vec = diag_vec.float()
+        diag_vec = diag_vec.float().clamp_min(self.eps_scale)
         out = []
 
         for i in range(0, diag_vec.shape[0], chunk):
-            d = diag_vec[i:i+chunk].clamp_min(self.diag_floor)   # (c, E)
+            d = diag_vec[i:i+chunk]   # (c, E)
 
             # Form G = A^T diag(d) A without (c,M,E) tensor:
             # Compute DA = d[..., :, None] * A[None, :, :]  -> (c, E, M)
