@@ -24,6 +24,21 @@ def atanh(x: torch.Tensor) -> torch.Tensor:
     return 0.5 * (torch.log1p(x) - torch.log1p(-x))
 
 
+def stable_right_inverse(W: torch.Tensor, tau: float = 1e-3) -> torch.Tensor:
+    """
+    W: (M,E)  (M << E)
+    returns A: (E,M) ≈ right-inverse
+    """
+    Wf = W.float()
+    M = Wf.shape[0]
+    I = torch.eye(M, device=W.device, dtype=torch.float32)
+    K = Wf @ Wf.T + tau * I                     # (M,M)
+    # Solve K X = W  -> X = K^{-1} W
+    X = torch.linalg.solve(K, Wf)               # (M,E)
+    A = X.T                                     # (E,M)  = W^T K^{-1}
+    return A.to(W.dtype)
+
+
 class EmbeddedLowRankGaussian(D.Distribution):
     """
     Intrinsic (manifold) distribution:
@@ -372,8 +387,9 @@ class PseudoMetric(torch.nn.Module):
 
     def make_pseudoinverse(self):
         W = self.metric.weight
-        self.A = torch.linalg.pinv(W.float()).to(W.dtype)  # (E,M)
-
+        # self.A = torch.linalg.pinv(W.float()).to(W.dtype)  # (E,M)
+        self.A = stable_right_inverse(W.float()).to(W.dtype)  # (E,M)
+        
     def build_distribution_from_center(
         self,
         center: torch.Tensor,        # (B,S,E) or (B,E)
