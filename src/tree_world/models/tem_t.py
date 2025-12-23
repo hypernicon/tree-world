@@ -409,7 +409,7 @@ class TemLocalizer(torch.nn.Module):
         geometric_logprobs = self.geometric_action_decoder.logprobs(
             next_location_minus_prefix, geometric_location_minus_prefix
         )
-        sensory_location_logprobs = location_distribution.log_prob(next_location, top_k=32).clamp(min=-1e4, max=1e4)
+        sensory_location_logprobs = location_distribution.log_prob(next_location, top_k=32)
         sensory_location_logprobs_minus_prefix, _ = self.remove_prefix(
             sensory_location_logprobs, prefix_length, batch_lengths
         )
@@ -421,7 +421,7 @@ class TemLocalizer(torch.nn.Module):
         mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask_minus_prefix
         mask = mask | (location_invalid_mask_indices >= batch_lengths[:, None])
         kl_divergence = kl_divergence.masked_fill(mask, 0.0)
-        kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-2)
+        kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-6)
         check_nan_inf("kl_divergence", kl_divergence)
 
         sensory_std = self.sensory_error_mlp(next_location)
@@ -432,17 +432,17 @@ class TemLocalizer(torch.nn.Module):
         with torch.no_grad():
             sensory_predicted = sensory_distribution.sample()
 
-        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted, top_k=32).clamp(min=-1e2, max=1e2)
+        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted, top_k=32)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
         mask = mask | (torch.arange(T, device=sensory.device)[None, :] >= batch_lengths[:, None])
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
-        sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-2)
+        sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-6)
         sensory_logprobs = sensory_logprobs.mean()
         check_nan_inf("sensory_logprobs", sensory_logprobs)
 
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
         sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
-        sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-2)
+        sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-6)
 
         if not (kl_divergence >= 0.0).all():
             print(f"kl_divergence is negative: {kl_divergence[kl_divergence < 0.0].shape}")
