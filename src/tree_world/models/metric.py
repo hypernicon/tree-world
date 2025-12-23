@@ -93,7 +93,7 @@ class EmbeddedLowRankGaussian(D.Distribution):
         x_flat = x.reshape(sample_shape + (-1, E))  # sample + (Bflat, E)
         return x_flat, sample_shape
 
-    def intrinsic_logdet_metric_chunked(self, diag_vec, chunk=256):
+    def _intrinsic_logdet_metric(self, diag_vec, chunk=256):
         """
         diag_vec: (N, E) float/half
         returns: (N,) logdet(A^T diag(diag_vec) A) with jitter
