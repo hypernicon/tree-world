@@ -65,7 +65,7 @@ class RandomTemTAgent(AgentModel):
         self.rewards = []
 
         self.prefix_length = 0
-        self.data_frequency = 10
+        self.data_frequency = 25
         torch.autograd.set_detect_anomaly(True)
 
     def reset(self):
