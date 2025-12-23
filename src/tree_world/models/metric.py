@@ -434,7 +434,6 @@ def gather_component(
         out = x.gather(dim=comp_dim, index=gather_idx).squeeze(-1)
         return out
     elif x.ndim == idx.ndim + 2:
-        print(f"x: {x.shape}, idx: {idx.shape}")
         # x: (..., S, E)
         B, Tx, S, E = x.shape
         B, T = idx.shape
