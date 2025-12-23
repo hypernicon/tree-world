@@ -120,7 +120,7 @@ class EmbeddedLowRankGaussian(D.Distribution):
             # free ASAP
             del DA, G, L
 
-    return torch.cat(out, dim=0).to(self.loc.dtype)
+        return torch.cat(out, dim=0).to(self.loc.dtype)
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         """
