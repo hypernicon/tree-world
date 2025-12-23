@@ -427,13 +427,20 @@ def gather_component(
     # Move comp_dim to -1 or -2 handling
     if x.ndim == idx.ndim + 1:
         # x: (..., S)
-        gather_idx = idx.unsqueeze(-1)
+        B, Tx, S, E = x.shape
+        B, T, K = idx.shape
+        if Tx != T:
+            x = x.expand(B, T, S, E)
+        gather_idx = idx.unsqueeze(-1).expand(B, T, K, E)
         out = x.gather(dim=comp_dim, index=gather_idx).squeeze(-1)
         return out
     elif x.ndim == idx.ndim + 2:
         # x: (..., S, E)
-        E = x.shape[-1]
-        gather_idx = idx.unsqueeze(-1).unsqueeze(-1).expand(*idx.shape, 1, E)
+        B, Tx, S, E1, E2 = x.shape
+        B, T, K = idx.shape
+        if Tx != T:
+            x = x.expand(B, T, S, E1, E2)
+        gather_idx = idx.unsqueeze(-1).unsqueeze(-1).expand(B, T, K, 1, E2)
         out = x.gather(dim=comp_dim, index=gather_idx).squeeze(comp_dim)
         return out
     else:
