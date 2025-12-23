@@ -19,7 +19,11 @@ def _build_A_and_cholesky(W, cs2, lam):
       L: (Bflat,M,M)  Cholesky of A = I + (1/lam) W diag(cs2) W^T
       logdetA: (Bflat,)
     """
+    assert W.ndim == 2
+    assert cs2.ndim == 2, f"cs2 must be (Bflat,E), got {cs2.shape}"
     M, E = W.shape
+    assert cs2.shape[1] == E, f"cs2 second dim {cs2.shape[1]} != E {E}"
+
     Bflat = cs2.shape[0]
     dtype = W.dtype
     device = W.device
