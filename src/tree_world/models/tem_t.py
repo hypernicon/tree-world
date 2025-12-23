@@ -1,6 +1,6 @@
 import math
 import torch
-import torch.distribution as D
+import torch.distributions as D
 
 from typing import Optional, Union
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
