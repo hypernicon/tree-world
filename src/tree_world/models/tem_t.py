@@ -341,9 +341,9 @@ class GeometricActionDecoder(torch.nn.Module):
         else:
             return next_location
     
-    def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor):
+    def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor, bounded_eps: float=1e-2):
         scale = self.error_mlp(mean_location)
-        loc = mean_location.clamp(-1.0 + self.bounded_eps, 1.0 - self.bounded_eps)
+        loc = mean_location.clamp(-1.0 + bounded_eps, 1.0 - bounded_eps)
         comp = D.Independent(D.Normal(loc, scale), 1)
         comp = D.TransformedDistribution(comp, D.TanhTransform(cache_size=1))
         return comp.log_prob(location)
