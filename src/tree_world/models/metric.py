@@ -126,8 +126,10 @@ class EmbeddedLowRankGaussian(D.Distribution):
         M, E = self._M, self._E
 
         y_flat, sample_shape = self._flatten_batch(value)        # sample + (Bflat,E)
-        loc_flat, _ = self._flatten_batch(self.loc.expand_as(value))
-        scale_flat, _ = self._flatten_batch(self.scale.expand_as(value))
+        value = value.expand_as(self.loc)               # <-- key line
+        loc_flat, _ = self._flatten_batch(self.loc)
+        scale = self.scale.expand_as(self.loc)
+        scale_flat, _ = self._flatten_batch(scale)
 
         # enforce positive scale (in fp32, then cast back)
         scale_flat = scale_flat.float().clamp_min(self.eps_scale).to(dtype)
