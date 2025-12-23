@@ -479,7 +479,7 @@ class IndexedMixture:
         comp_log_prob(value, **params) must return log_prob_x of shape (..., S)
         """
         # log mix probs in fp32
-        if top_k is not None:
+        if top_k is not None and top_k < self.logits.shape[-1]:
             top_k_logits, top_k_indices = torch.topk(self.logits.float(), dim=-1, k=top_k)
             log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
             center = gather_component(self.params["center"], top_k_indices, comp_dim=-2)
