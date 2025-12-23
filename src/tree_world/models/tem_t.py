@@ -381,7 +381,7 @@ class TemLocalizer(torch.nn.Module):
         geometric_logprobs = self.geometric_action_decoder.logprobs(
             next_location[:, prefix_length:], geometric_location[:, prefix_length:]
         )
-        sensory_location_logprobs = location_distribution.log_prob(next_location)
+        sensory_location_logprobs = location_distribution.log_prob(next_location).clamp(min=-1e4, max=1e4)
 
         kl_divergence = sensory_location_logprobs - geometric_logprobs
         mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask[:, prefix_length:]
@@ -397,7 +397,7 @@ class TemLocalizer(torch.nn.Module):
         with torch.no_grad():
             sensory_predicted = sensory_distribution.sample()
 
-        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted)
+        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted).clamp(min=-1e4, max=1e4)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
         sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
