@@ -199,43 +199,36 @@ class EmbeddedLowRankTanhGaussian(D.Distribution):
         return l
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        # clamp away from ±1 in fp32 (bf16 needs a coarse eps; 1e-2 is sane)
+        # clamp away from ±1 in fp32
         l = value.float().clamp(-1.0 + self.clamp_eps, 1.0 - self.clamp_eps)
+
+        # IMPORTANT: broadcast l to base.loc shape (batch+(E,))
+        # base.loc is the authoritative batch shape, e.g. (B,T,S,E)
+        l = l.expand_as(self.base.loc).to(self.base.loc.dtype)
 
         # invert: y = atanh(l)
         y = atanh(l)
 
-        # base intrinsic log_prob in y-space
-        lp_y = self.base.log_prob(y.to(self.base.loc.dtype))
+        # base intrinsic log_prob in y-space (this will now match shapes)
+        lp_y = self.base.log_prob(y)
 
-        # intrinsic Jacobian from u -> l is J_l = diag( (1 - l^2) ) * diag(scale) * A
-        # So G_l = A^T diag( scale^2 * (1-l^2)^2 ) A
-        # We account for this by subtracting 1/2 logdet(G_l) instead of 1/2 logdet(G_y).
-        #
-        # Easiest: recompute the intrinsic logdet term difference:
-        # lp(l) = log N(u) - 1/2 logdet(G_l)
-        # but base.log_prob(y) = log N(u) - 1/2 logdet(G_y)
-        # so lp(l) = lp_y + 1/2(logdet(G_y) - logdet(G_l))
+        # compute d = 1 - l^2
+        d = (1.0 - l.pow(2)).clamp_min(0.0)   # (B,T,S,E)
 
-        # compute (1-l^2)^2 factor
-        d = (1.0 - l.pow(2)).to(self.base.loc.dtype)            # (...,E)
-        scale = self.base.scale.expand_as(d)
+        # scale broadcast to same shape
+        scale = self.base.scale.expand_as(self.base.loc)
         scale = scale.float().clamp_min(self.base.eps_scale).to(self.base.loc.dtype)
 
-        diag_y = scale.pow(2)                                   # (...,E)
-        diag_l = (scale * d).pow(2)                              # (...,E)
+        # diag vectors for intrinsic logdet metric
+        diag_y = scale.pow(2)                 # (B,T,S,E)
+        diag_l = (scale * d).pow(2)           # (B,T,S,E)
 
-        # flatten to (K, E) for logdet
         E = self.base._E
-        diag_y_flat = diag_y.reshape(-1, E)
-        diag_l_flat = diag_l.reshape(-1, E)
-
-        logdetGy = self.base._intrinsic_logdet_metric(diag_y_flat).reshape(lp_y.shape)
-        logdetGl = self.base._intrinsic_logdet_metric(diag_l_flat).reshape(lp_y.shape)
+        logdetGy = self.base._intrinsic_logdet_metric(diag_y.reshape(-1, E)).reshape(lp_y.shape)
+        logdetGl = self.base._intrinsic_logdet_metric(diag_l.reshape(-1, E)).reshape(lp_y.shape)
 
         lp_l = lp_y + 0.5 * (logdetGy - logdetGl)
         return lp_l
-
 
 
 class PseudoMetric(torch.nn.Module):
