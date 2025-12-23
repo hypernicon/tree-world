@@ -323,7 +323,7 @@ class TemLocalizer(torch.nn.Module):
         B = tensor.shape[0]
         actual_lengths = batch_lengths - prefix_length
         S = actual_lengths.max()
-        indices = torch.arange(S, device=tensor.device)[:, None] + prefix_length[None, :]
+        indices = torch.arange(S, device=tensor.device)[None, :] + prefix_length[:, None]
         while indices.ndim < tensor.ndim:
             indices = indices.unsqueeze(-1)
         indices = indices.expand(B, S, *tensor.shape[2:])
