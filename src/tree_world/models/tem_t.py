@@ -367,7 +367,7 @@ class TemLocalizer(torch.nn.Module):
             )
 
             with torch.no_grad():
-                sensory_location = location_distribution.sample()
+                sensory_location = location_distribution.sample().clamp(min=-1+1e-6, max=1-1e-6)
 
             location_disagreement = self.location_metric.psuedo_distance(geometric_location, sensory_location)
 
@@ -375,7 +375,7 @@ class TemLocalizer(torch.nn.Module):
                 break
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
-        next_location = location_distribution.sample()
+        next_location = location_distribution.sample().clamp(min=-1+1e-6, max=1-1e-6)
         check_nan_inf("next_location", next_location) 
 
         geometric_logprobs = self.geometric_action_decoder.logprobs(
