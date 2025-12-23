@@ -199,6 +199,8 @@ class RandomTemTAgent(AgentModel):
 
         prefix_lengths = torch.tensor([p[3] for p in self.dataset], dtype=torch.long, device=device)
 
+        print(f"DATASET: Sensory: {sensory.shape} Locations: {locations.shape} Actions: {actions.shape} Prefix Lengths: {prefix_lengths.shape}")
+
         _, _, _, elbo, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
                 sensory, locations, actions, prefix_length=prefix_lengths, batch_lengths=sensory_lengths
