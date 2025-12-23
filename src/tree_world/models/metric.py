@@ -279,6 +279,7 @@ class PseudoMetric(torch.nn.Module):
         self.scale_factor = self.metric_rank ** -0.5
 
         self.A = None
+        self.W_norm = None
         
     def affinity_2d(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
         if prepared_k:
@@ -401,9 +402,10 @@ class PseudoMetric(torch.nn.Module):
         chol_jitter: float = 1e-6,
     ):
         # compute right-inverse once per call
-        W = self.W_norm
         if self.A is None:
             self.make_pseudoinverse()
+
+        W = self.W_norm
 
         base = EmbeddedLowRankGaussian(
             loc=center,
