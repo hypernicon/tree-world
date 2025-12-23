@@ -387,9 +387,10 @@ class PseudoMetric(torch.nn.Module):
 
     def make_pseudoinverse(self):
         W = self.metric.weight
+        self.W_norm = W / W.norm(dim=0, keepdim=True)
         # self.A = torch.linalg.pinv(W.float()).to(W.dtype)  # (E,M)
         self.A = stable_right_inverse(W.float()).to(W.dtype)  # (E,M)
-        
+
     def build_distribution_from_center(
         self,
         center: torch.Tensor,        # (B,S,E) or (B,E)
@@ -400,7 +401,7 @@ class PseudoMetric(torch.nn.Module):
         chol_jitter: float = 1e-6,
     ):
         # compute right-inverse once per call
-        W = self.metric.weight
+        W = self.W_norm
         if self.A is None:
             self.make_pseudoinverse()
 
