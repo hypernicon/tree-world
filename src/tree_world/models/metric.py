@@ -101,7 +101,7 @@ class EmbeddedLowRankGaussian(D.Distribution):
         # Compute G in fp32 for stability:
         A = self.A.float()             # (E,M)
         At = A.T.contiguous()          # (M,E)
-        diag_f = diag_vec.float()      # (Bflat,E)
+        diag_f = diag_vec.float().clamp_min(self.eps_scale)      # (Bflat,E)
 
         Bflat, E = diag_f.shape
         M = At.shape[0]
