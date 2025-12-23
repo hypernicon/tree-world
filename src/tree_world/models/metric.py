@@ -123,8 +123,8 @@ class EmbeddedLowRankGaussian(D.Distribution):
         value: sample_shape + broadcastable_batch + (E,)
         returns: sample_shape + broadcasted_batch
         """
-        dtype = self.loc.dtype
-        device = self.loc.device
+        dtype = value.dtype
+        device = value.device
         M, E = self._M, self._E
 
         # ---- 1) Broadcast everything to the distribution's batch shape ----
@@ -136,8 +136,9 @@ class EmbeddedLowRankGaussian(D.Distribution):
         # Broadcast value to have the distribution batch dims (self.batch_shape).
         # We allow value to omit the S dim (e.g. (B,T,E)) or have singleton S (B,T,1,E).
         # The canonical batch tensor is loc: batch+(E,)
-        loc = self.loc
-        scale = self.scale
+        loc = self.loc.to(dtype).to(device)
+        scale = self.scale.to(dtype).to(device)
+        W = self.W.to(dtype).to(device)
 
         # Bring value up to loc's batch rank (possibly by inserting singleton dims before event)
         # We want value.ndim == loc.ndim or loc.ndim+? with sample dims in front.
@@ -162,7 +163,7 @@ class EmbeddedLowRankGaussian(D.Distribution):
         # ---- 3) Compute intrinsic pullback u = W * ((y-loc)/scale) ----
         scale_flat = scale_flat.float().clamp_min(self.eps_scale).to(dtype)
         delta = (v_flat - loc_flat) / scale_flat                  # (N,E)
-        u = delta @ self.W.T                                      # (N,M)
+        u = delta @ W.T                                      # (N,M)
 
         # log N(u;0,I)
         logp_u = -0.5 * (u.float().pow(2).sum(dim=-1) + M * math.log(2.0 * math.pi))  # (N,)
