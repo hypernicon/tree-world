@@ -367,7 +367,7 @@ class TemLocalizer(torch.nn.Module):
             )
 
             with torch.no_grad():
-                sensory_location = location_distribution.sample().clamp(min=-1+1e-6, max=1-1e-6)
+                sensory_location = location_distribution.sample().clamp(min=-1+1e-4, max=1-1e-4)
 
             location_disagreement = self.location_metric.psuedo_distance(geometric_location, sensory_location)
 
