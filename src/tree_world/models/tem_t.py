@@ -82,16 +82,16 @@ class IndexedGaussianMixture:
         if top_k is not None and top_k < self.logits.shape[-1]:
             top_k_logits, top_k_indices = torch.topk(self.logits.float(), dim=-1, k=top_k)
             log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
-            center = gather_component(self.params["center"], top_k_indices, comp_dim=-2)
+            loc = gather_component(self.params["loc"], top_k_indices, comp_dim=-2)
             scale = gather_component(self.params["scale"], top_k_indices, comp_dim=-2)
         else:
             log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
-            center = self.params["center"]
+            loc = self.params["loc"]
             scale = self.params["scale"]
 
         # component log probs: (..., S)
         v = value.unsqueeze(-2).float()
-        comp = self._build_distribution(center, scale)
+        comp = self._build_distribution(loc, scale)
         log_px = comp.log_prob(v)              # compute in fp32 internally if needed
 
         z = log_mix + log_px
