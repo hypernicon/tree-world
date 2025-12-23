@@ -120,40 +120,62 @@ class EmbeddedLowRankGaussian(D.Distribution):
 
     def log_prob(self, value: torch.Tensor) -> torch.Tensor:
         """
-        Intrinsic log density for y = value.
+        value: sample_shape + broadcastable_batch + (E,)
+        returns: sample_shape + broadcasted_batch
         """
         dtype = self.loc.dtype
+        device = self.loc.device
         M, E = self._M, self._E
 
-        y_flat, sample_shape = self._flatten_batch(value)        # sample + (Bflat,E)
-        value = value.expand_as(self.loc)               # <-- key line
-        loc_flat, _ = self._flatten_batch(self.loc)
-        scale = self.scale.expand_as(self.loc)
-        scale_flat, _ = self._flatten_batch(scale)
+        # ---- 1) Broadcast everything to the distribution's batch shape ----
+        # target shape is: sample_shape + batch_shape + (E,)
+        # We'll infer sample_shape from 'value' by aligning its trailing event dim.
+        if value.shape[-1] != E:
+            raise ValueError(f"value last dim {value.shape[-1]} != E {E}")
 
-        # enforce positive scale (in fp32, then cast back)
+        # Broadcast value to have the distribution batch dims (self.batch_shape).
+        # We allow value to omit the S dim (e.g. (B,T,E)) or have singleton S (B,T,1,E).
+        # The canonical batch tensor is loc: batch+(E,)
+        loc = self.loc
+        scale = self.scale
+
+        # Bring value up to loc's batch rank (possibly by inserting singleton dims before event)
+        # We want value.ndim == loc.ndim or loc.ndim+? with sample dims in front.
+        batch_ndim = len(self.batch_shape)
+        # value has: sample_ndim + batch' + 1(event)
+        # loc has:   batch_ndim + 1(event)
+        sample_ndim = value.ndim - (batch_ndim + 1)
+        if sample_ndim < 0:
+            raise ValueError(f"value has too few dims: {value.shape} for batch_shape {self.batch_shape}")
+
+        # Now expand value/loc/scale to a common shape
+        target_shape = value.shape[:sample_ndim] + loc.shape  # sample + batch + (E,)
+        v = value.expand(target_shape)
+        loc_e = loc.expand(target_shape)
+        scale_e = scale.expand(target_shape)
+
+        # ---- 2) Flatten sample+batch to (N, E) consistently ----
+        v_flat = v.reshape(-1, E)
+        loc_flat = loc_e.reshape(-1, E)
+        scale_flat = scale_e.reshape(-1, E)
+
+        # ---- 3) Compute intrinsic pullback u = W * ((y-loc)/scale) ----
         scale_flat = scale_flat.float().clamp_min(self.eps_scale).to(dtype)
-
-        # Pull back to u using u = W * ((y-loc)/scale)
-        delta = (y_flat - loc_flat) / scale_flat                # sample+(Bflat,E)
-        u = delta @ self.W.T                                    # sample+(Bflat,M)
+        delta = (v_flat - loc_flat) / scale_flat                  # (N,E)
+        u = delta @ self.W.T                                      # (N,M)
 
         # log N(u;0,I)
-        logp_u = -0.5 * (u.float().pow(2).sum(dim=-1) + M * LOG2PI)  # sample+(Bflat,)
+        logp_u = -0.5 * (u.float().pow(2).sum(dim=-1) + M * math.log(2.0 * math.pi))  # (N,)
 
-        # intrinsic Jacobian term from u->y: J = diag(scale) A
-        # G = J^T J = A^T diag(scale^2) A
-        diag_vec = scale_flat.pow(2)                             # sample+(Bflat,E)
+        # ---- 4) Jacobian constant term for unbounded case (if you cache it) ----
+        # If you are still computing logdet per-call, do it on (N,E) diag weights.
+        # For unbounded, diag is scale^2 and does NOT depend on sample, so you should cache per batch element.
+        # For now, keep it general:
+        diag_vec = scale_flat.pow(2)  # (N,E)
+        logdetG = self._intrinsic_logdet_metric(diag_vec)  # (N,)
 
-        # We need logdet per (sample,Bflat). Flatten sample dims into leading batch for logdet:
-        diag_vec2 = diag_vec.reshape(-1, E)                      # (sample*Bflat, E)
-        logdetG = self._intrinsic_logdet_metric(diag_vec2)       # (sample*Bflat,)
-        logdetG = logdetG.reshape(logp_u.shape)                  # sample+(Bflat,)
-
-        logp = logp_u - 0.5 * logdetG
-        # reshape back to sample_shape + batch_shape
-        out = logp.reshape(sample_shape + self.batch_shape)
-        return out
+        lp = logp_u - 0.5 * logdetG                        # (N,)
+        return lp.reshape(target_shape[:-1]).to(dtype)
 
 
 class EmbeddedLowRankTanhGaussian(D.Distribution):
