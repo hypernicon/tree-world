@@ -375,7 +375,7 @@ class TemLocalizer(torch.nn.Module):
                 break
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
-        next_location = location_distribution.sample().clamp(min=-1+1e-4, max=1-1e-4)
+        next_location = location_distribution.sample().clamp(min=-1+1e-2, max=1-1e-2)
         print(f"next_location: {next_location[0,:4, :10].detach().cpu().float().numpy().tolist()}")
         check_nan_inf("next_location", next_location) 
 
@@ -398,7 +398,7 @@ class TemLocalizer(torch.nn.Module):
         with torch.no_grad():
             sensory_predicted = sensory_distribution.sample()
 
-        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted).clamp(min=-1e4, max=1e4)
+        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted).clamp(min=-1e2, max=1e2)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
         sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-8)
