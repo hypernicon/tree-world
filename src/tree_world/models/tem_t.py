@@ -1,10 +1,9 @@
 import math
 import torch
-import torch.distributions as D
 
 from typing import Optional, Union
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
-from .metric import PseudoMetric
+from .metric import PseudoMetric, IndexedMixture
 
 
 def check_nan_inf(name, t):
@@ -195,16 +194,14 @@ class MetricSampler(torch.nn.Module):
 
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
         qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
-        
-        qk_categorical = D.Categorical(logits=-0.5 * qk_distances)
-        sampler = self.v_metric.build_distribution_with_center(
-            center=value[:, None, :, :].expand(-1, T, -1, -1),
-            scale=value_std[:, None, :, :].expand(-1, T, -1, -1),
+
+        return IndexedMixture(
+            logits=-0.5 * qk_distances, 
+            metric=self.v_metric, 
+            center=value[:, None, :, :].expand(-1, T, -1, -1), 
+            scale=value_std[:, None, :, :].expand(-1, T, -1, -1), 
             bounded=self.bounded
         )
-        dist = D.MixtureSameFamily(qk_categorical, sampler)
-        
-        return dist, invalid_mask.squeeze(-1)
 
 
 class GeometricActionDecoder(torch.nn.Module):

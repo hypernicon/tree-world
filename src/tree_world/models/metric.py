@@ -1,152 +1,217 @@
 import torch
 import torch.distributions as D
 import math
-from typing import Optional, Union
+from typing import Optional, Union, Callable, Tuple
 
 from ..fourier import make_alphas, make_lattice_basis
+
+
+LOG2PI = math.log(2.0 * math.pi)
 
 
 def atanh(x):
     return 0.5 * (torch.log1p(x) - torch.log1p(-x))
 
 
-def _build_A_and_cholesky(W, cs2, lam):
+import math
+import torch
+import torch.distributions as D
+
+LOG2PI = math.log(2.0 * math.pi)
+
+def atanh(x: torch.Tensor) -> torch.Tensor:
+    # stable atanh for |x|<1
+    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
+
+
+class EmbeddedLowRankGaussian(D.Distribution):
     """
-    W:   (M,E)
-    cs2: (Bflat,E)
-    lam: scalar tensor
-    returns:
-      L: (Bflat,M,M)  Cholesky of A = I + (1/lam) W diag(cs2) W^T
-      logdetA: (Bflat,)
-    """
-    assert W.ndim == 2
-    assert cs2.ndim == 2, f"cs2 must be (Bflat,E), got {cs2.shape}"
-    M, E = W.shape
-    assert cs2.shape[1] == E, f"cs2 second dim {cs2.shape[1]} != E {E}"
+    Intrinsic (manifold) distribution:
+        u ~ N(0, I_M)
+        y = loc + scale ⊙ (A u)
+    where:
+        W: (M, E), full row-rank (ideally)
+        A: (E, M) right-inverse, e.g. pinv(W) so that W @ A ≈ I_M
 
-    Bflat = cs2.shape[0]
-    dtype = W.dtype
-    device = W.device
-
-    # WWt = W diag(cs2[b]) W^T  -> (Bflat,M,M)
-    WWt = torch.mm(cs2, (W[:, None, :] * W[None, :, :]).view(M*M, E).T).view(Bflat, M, M)
-    # WWt = torch.einsum('me,be,ne->bmn', W.float(), cs2.float(), W.float())  # fp32
-
-    I = torch.eye(M, device=device, dtype=W.dtype).unsqueeze(0).expand(Bflat, M, M)
-    A = (I + (1.0 / lam) * WWt).float()  # fp32
-
-    L = torch.linalg.cholesky(A).to(dtype)  # fp32
-    logdetA = 2.0 * torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(dim=-1)  # fp32
-
-    return L.to(dtype), logdetA.to(dtype)
-
-
-class LowRankPlusDiagGaussian(D.Distribution):
-    """
-    x ~ N(loc, s^2 * (lam I + (W diag(col_scale))^T (W diag(col_scale)))^-1)
-
-    W:         (M, E) shared
-    col_scale: batch+(E,)
-    loc:       batch+(E,)
+    log_prob(y) is the *intrinsic* log density induced by u (not a full R^E Lebesgue density).
     """
     support = D.constraints.real
     has_rsample = True
-    arg_constraints = {
-        'loc': D.constraints.real, 
-        'W': D.constraints.real, 
-        'col_scale': D.constraints.real, 
-    }
 
-    def __init__(self, loc, W, col_scale, s=1.0, lam=1e-3, validate_args=None):
+    def __init__(
+        self,
+        loc: torch.Tensor,          # batch+(E,)
+        W: torch.Tensor,            # (M,E)
+        scale: torch.Tensor,        # batch+(E,)  (can be scalar-broadcasted)
+        A: Optional[torch.Tensor] = None,     # (E,M) optional; if None compute pinv(W)
+        validate_args=None,
+        eps_scale: float = 1e-6,
+        chol_jitter: float = 1e-6,
+    ):
         self.loc = loc
         self.W = W
-        self.col_scale = col_scale
-        self.s = float(s)
-        self.lam = float(lam)
-
-        super().__init__(
-            batch_shape=loc.shape[:-1],
-            event_shape=loc.shape[-1:],
-            validate_args=validate_args,
-        )
+        self.scale = scale
+        self.eps_scale = float(eps_scale)
+        self.chol_jitter = float(chol_jitter)
 
         M, E = W.shape
-        dtype = W.dtype
         assert loc.shape[-1] == E, f"loc last dim {loc.shape[-1]} != W second dim {E}"
-        assert col_scale.shape == loc.shape, f"col_scale {col_scale.shape} != loc {loc.shape}"
+        assert scale.shape == loc.shape or scale.shape == (1,) or scale.shape == (), \
+            f"scale shape {scale.shape} must broadcast to loc {loc.shape}"
 
+        if A is None:
+            # NOTE: pinv is done in fp32 for stability
+            A = torch.linalg.pinv(W.float()).to(W.dtype)  # (E,M)
+
+        assert A.shape == (E, M)
+
+        self.A = A
         self._M = M
         self._E = E
 
+        super().__init__(batch_shape=loc.shape[:-1], event_shape=(E,), validate_args=validate_args)
+
     def rsample(self, sample_shape=torch.Size()):
+        dtype = self.loc.dtype
         device = self.loc.device
+        M, E = self._M, self._E
+
+        # sample u ~ N(0, I_M)
+        u = torch.randn(sample_shape + self.batch_shape + (M,), device=device, dtype=dtype)
+
+        # y = loc + scale ⊙ (A u)
+        # (..,M) @ (M,E) -> (..,E)
+        Au = u @ self.A.T
+        y = self.loc + self.scale * Au
+        return y
+
+    def _flatten_batch(self, x: torch.Tensor):
+        # x: sample_shape + batch_shape + (E,)
+        E = x.shape[-1]
+        batch_ndim = len(self.batch_shape)
+        sample_shape = x.shape[:-(batch_ndim + 1)]
+        x_flat = x.reshape(sample_shape + (-1, E))  # sample + (Bflat, E)
+        return x_flat, sample_shape
+
+    def _intrinsic_logdet_metric(self, diag_vec: torch.Tensor) -> torch.Tensor:
+        """
+        diag_vec: (Bflat, E) nonnegative weights defining G = A^T diag(diag_vec) A (M×M)
+        returns: (Bflat,) logdet(G)
+        """
+        # Compute G in fp32 for stability:
+        A = self.A.float()             # (E,M)
+        At = A.T.contiguous()          # (M,E)
+        diag_f = diag_vec.float()      # (Bflat,E)
+
+        Bflat, E = diag_f.shape
+        M = At.shape[0]
+
+        # Build G = At * diag_f @ A  without forming diag:
+        # (Bflat,M,E) = (1,M,E) * (Bflat,1,E)
+        Atw = At.unsqueeze(0) * diag_f.unsqueeze(1)
+        G = Atw @ A                    # (Bflat,M,M)
+
+        # Add a tiny jitter to diagonal to avoid singularities when diag_vec has zeros
+        G.diagonal(dim1=-2, dim2=-1).add_(self.chol_jitter)
+
+        L = torch.linalg.cholesky(G)   # (Bflat,M,M) fp32
+        logdet = 2.0 * torch.log(torch.diagonal(L, dim1=-2, dim2=-1)).sum(dim=-1)  # (Bflat,)
+        return logdet.to(self.loc.dtype)
+
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        """
+        Intrinsic log density for y = value.
+        """
         dtype = self.loc.dtype
         M, E = self._M, self._E
-        lam, s = self.lam, self.s
 
-        # Flatten batch for cached chol(A)
-        loc = self.loc.reshape(-1, E)             # (Bflat, E)
-        cs = self.col_scale.reshape(-1, E)        # (Bflat, E)
-        lam_t = torch.as_tensor(self.lam, device=self.loc.device, dtype=self.loc.dtype)
-        L, _ = _build_A_and_cholesky(self.W, cs.square(), lam_t)
-        Bflat = loc.shape[0]
+        y_flat, sample_shape = self._flatten_batch(value)        # sample + (Bflat,E)
+        loc_flat, _ = self._flatten_batch(self.loc.expand_as(value))
+        scale_flat, _ = self._flatten_batch(self.scale.expand_as(value))
 
-        # z ~ N(0, (s^2/lam) I_E)
-        z = (s / math.sqrt(lam)) * torch.randn(sample_shape + (Bflat, E), device=device, dtype=dtype)
-        # eps ~ N(0, s^2 I_M)
-        eps = s * torch.randn(sample_shape + (Bflat, M), device=device, dtype=dtype)
+        # enforce positive scale (in fp32, then cast back)
+        scale_flat = scale_flat.float().clamp_min(self.eps_scale).to(dtype)
 
-        # y = W (cs ⊙ z) + eps
-        cz = cs.unsqueeze(0) * z                  # sample+(Bflat,E)
-        y = cz @ self.W.t() + eps                 # sample+(Bflat,M)
+        # Pull back to u using u = W * ((y-loc)/scale)
+        delta = (y_flat - loc_flat) / scale_flat                # sample+(Bflat,E)
+        u = delta @ self.W.T                                    # sample+(Bflat,M)
 
-        # alpha = A^{-1} (y/lam)
-        alpha = torch.cholesky_solve((y / lam).unsqueeze(-1).float(), L.unsqueeze(0).float()).squeeze(-1).to(dtype)  # sample+(Bflat,M)
+        # log N(u;0,I)
+        logp_u = -0.5 * (u.float().pow(2).sum(dim=-1) + M * LOG2PI)  # sample+(Bflat,)
 
-        # delta = z - cs ⊙ (W^T alpha)
-        Wt_alpha = alpha @ self.W                 # sample+(Bflat,E)
-        delta = z - cs.unsqueeze(0) * Wt_alpha    # sample+(Bflat,E)
+        # intrinsic Jacobian term from u->y: J = diag(scale) A
+        # G = J^T J = A^T diag(scale^2) A
+        diag_vec = scale_flat.pow(2)                             # sample+(Bflat,E)
 
-        out = loc.unsqueeze(0) + delta            # sample+(Bflat,E)
-        return out.reshape(sample_shape + self.batch_shape + (E,))
+        # We need logdet per (sample,Bflat). Flatten sample dims into leading batch for logdet:
+        diag_vec2 = diag_vec.reshape(-1, E)                      # (sample*Bflat, E)
+        logdetG = self._intrinsic_logdet_metric(diag_vec2)       # (sample*Bflat,)
+        logdetG = logdetG.reshape(logp_u.shape)                  # sample+(Bflat,)
 
-    def _log_prob_core(self, value, loc, W, col_scale, lam_t, s_t):
-        """
-        value, loc: (Bflat,E)
-        W:          (M,E)
-        col_scale:  (Bflat,E)
-        lam_t, s_t: scalar tensors (on same device)
-        returns:    (Bflat,)
-        """
-        M, E = W.shape
-        x = value - loc                       # (Bflat,E)
-        cs2 = col_scale.square()              # (Bflat,E)
+        logp = logp_u - 0.5 * logdetG
+        # reshape back to sample_shape + batch_shape
+        out = logp.reshape(sample_shape + self.batch_shape)
+        return out
 
-        L, logdetA = _build_A_and_cholesky(W, cs2, lam_t)
 
-        # quad = (lam||x||^2 + ||W (c⊙x)||^2) / s^2
-        cx = col_scale * x                    # (Bflat,E)
-        Wx = cx @ W.t()                       # (Bflat,M)
-        quad = (lam_t * (x * x).sum(dim=-1) + (Wx * Wx).sum(dim=-1)) / (s_t * s_t)
+class EmbeddedLowRankTanhGaussian(D.Distribution):
+    """
+    l = tanh(y), where y ~ EmbeddedLowRankGaussian(...)
+    Intrinsic density in l-space (again, on the pushed manifold in (-1,1)^E).
+    """
+    support = D.constraints.interval(-1.0, 1.0)
+    has_rsample = True
 
-        # logdet precision = [E log lam + logdetA] - 2E log s
-        logdet_prec = (E * torch.log(lam_t) + logdetA) - 2.0 * E * torch.log(s_t)
+    def __init__(self, base: EmbeddedLowRankGaussian, clamp_eps: float = 1e-2, validate_args=None):
+        self.base = base
+        self.clamp_eps = float(clamp_eps)
+        super().__init__(batch_shape=base.batch_shape, event_shape=base.event_shape, validate_args=validate_args)
 
-        lp = 0.5 * (logdet_prec - quad - E * math.log(2.0 * math.pi))
-        return lp
-    
-    def log_prob(self, value):
-        E = self._E
+    def rsample(self, sample_shape=torch.Size()):
+        y = self.base.rsample(sample_shape)
+        l = torch.tanh(y)
+        # IMPORTANT for bf16: clamp in fp32 with eps big enough (you found 1e-2 works)
+        l = l.float().clamp(-1.0 + self.clamp_eps, 1.0 - self.clamp_eps).to(y.dtype)
+        return l
 
-        value_f = value.reshape(-1, E)
-        loc_f   = self.loc.reshape(-1, E)
-        cs_f    = self.col_scale.reshape(-1, E)
+    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
+        # clamp away from ±1 in fp32 (bf16 needs a coarse eps; 1e-2 is sane)
+        l = value.float().clamp(-1.0 + self.clamp_eps, 1.0 - self.clamp_eps)
 
-        lam_t = torch.as_tensor(self.lam, device=value.device, dtype=value.dtype)
-        s_t   = torch.as_tensor(self.s,   device=value.device, dtype=value.dtype)
+        # invert: y = atanh(l)
+        y = atanh(l)
 
-        lp_f = torch.utils.checkpoint.checkpoint(self._log_prob_core, value_f, loc_f, self.W, cs_f, lam_t, s_t, use_reentrant=False)
-        return lp_f.reshape(self.batch_shape)
+        # base intrinsic log_prob in y-space
+        lp_y = self.base.log_prob(y.to(self.base.loc.dtype))
+
+        # intrinsic Jacobian from u -> l is J_l = diag( (1 - l^2) ) * diag(scale) * A
+        # So G_l = A^T diag( scale^2 * (1-l^2)^2 ) A
+        # We account for this by subtracting 1/2 logdet(G_l) instead of 1/2 logdet(G_y).
+        #
+        # Easiest: recompute the intrinsic logdet term difference:
+        # lp(l) = log N(u) - 1/2 logdet(G_l)
+        # but base.log_prob(y) = log N(u) - 1/2 logdet(G_y)
+        # so lp(l) = lp_y + 1/2(logdet(G_y) - logdet(G_l))
+
+        # compute (1-l^2)^2 factor
+        d = (1.0 - l.pow(2)).to(self.base.loc.dtype)            # (...,E)
+        scale = self.base.scale.expand_as(d)
+        scale = scale.float().clamp_min(self.base.eps_scale).to(self.base.loc.dtype)
+
+        diag_y = scale.pow(2)                                   # (...,E)
+        diag_l = (scale * d).pow(2)                              # (...,E)
+
+        # flatten to (K, E) for logdet
+        E = self.base._E
+        diag_y_flat = diag_y.reshape(-1, E)
+        diag_l_flat = diag_l.reshape(-1, E)
+
+        logdetGy = self.base._intrinsic_logdet_metric(diag_y_flat).reshape(lp_y.shape)
+        logdetGl = self.base._intrinsic_logdet_metric(diag_l_flat).reshape(lp_y.shape)
+
+        lp_l = lp_y + 0.5 * (logdetGy - logdetGl)
+        return lp_l
+
 
 
 class PseudoMetric(torch.nn.Module):
@@ -175,6 +240,8 @@ class PseudoMetric(torch.nn.Module):
         self.metric = torch.nn.Linear(self.vector_dim, self.metric_rank, bias=False)
 
         self.scale_factor = self.metric_rank ** -0.5
+
+        self.A = None
         
     def affinity_2d(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False):
         if prepared_k:
@@ -281,52 +348,129 @@ class PseudoMetric(torch.nn.Module):
         core = R @ R.mH    # (..., r, r)  (use .mH so this works for real and complex)
         return torch.linalg.matrix_norm(core, ord=2).to(self.metric.weight.dtype)     # (...,)
 
-    def build_distribution_with_center(
-        self,
-        center: torch.Tensor,           # (B,S,E)
-        scale: torch.Tensor,         # (B,S,E)  learnable unconstrained
-        lam: float = 1e-2,
-        eps: float = 1e-2,
-        bounded: bool = False,
-    ):
-        # learned positive step
-        scale = scale.clamp_min(eps)  # (B,S,E)
+    def make_pseudoinverse(self):
+        W = self.metric.weight.T
+        self.A = torch.linalg.pinv(W.float()).to(W.dtype)  # (E,M)
 
-        W = self.metric.weight  # (M,E)
+    def build_distribution_from_center(
+        self,
+        center: torch.Tensor,        # (B,S,E) or (B,E)
+        scale: torch.Tensor,          # broadcastable to center, e.g. (B,S,E) or scalar
+        bounded: bool,
+        clamp_eps: float = 1e-2,
+        eps_scale: float = 1e-6,
+        chol_jitter: float = 1e-6,
+    ):
+        # compute right-inverse once per call
+        W = self.metric.weight.T
+        if self.A is None:
+            self.make_pseudoinverse()
+
+        base = EmbeddedLowRankGaussian(
+            loc=center,
+            W=W,
+            scale=scale,
+            A=self.A,
+            eps_scale=eps_scale,
+            chol_jitter=chol_jitter,
+        )
 
         if bounded:
-            center_c = center.clamp(-1 + eps, 1 - eps)
-            y0 = atanh(center_c)  # (B,S,E)
-
-            # Jacobian diag at center: d tanh / dy = 1 - tanh(y)^2 = 1 - center^2
-            col_scale = (1.0 - center_c.square()).clamp_min(eps)
-
-            # delta distribution in y-space, zero mean
-            base_delta = LowRankPlusDiagGaussian(
-                loc=torch.zeros_like(y0),
-                W=W,
-                col_scale=col_scale,
-                s=1.0,
-                lam=lam,
-            )
-
-            # y = y0 + step ⊙ delta
-            y_dist = D.TransformedDistribution(base_delta, D.AffineTransform(loc=y0, scale=scale))
-
-            # l = tanh(y)
-            return D.TransformedDistribution(y_dist, D.TanhTransform(cache_size=1))
-
+            return EmbeddedLowRankTanhGaussian(base, clamp_eps=clamp_eps)
         else:
-            # unbounded: center is already in ℝ^E
-            col_scale = torch.ones_like(center)
+            return base
 
-            base_delta = LowRankPlusDiagGaussian(
-                loc=torch.zeros_like(center),
-                W=W,
-                col_scale=col_scale,
-                s=1.0,
-                lam=lam,
-            )
 
-            # x = center + step ⊙ delta
-            return D.TransformedDistribution(base_delta, D.AffineTransform(loc=center, scale=scale))
+def sample_indexed_mixture(
+    logits: torch.Tensor,  # (B,T,S) or (...,S)
+) -> torch.Tensor:
+    """
+    Samples mixture component indices without constructing a Distribution.
+    Returns indices of shape logits.shape[:-1], values in [0,S).
+    """
+    # Always do categorical sampling in fp32 for stability in bf16
+    probs = torch.nn.functional.softmax(logits.float(), dim=-1)
+    # multinomial expects 2D; flatten leading dims
+    flat = probs.reshape(-1, probs.shape[-1])
+    idx = torch.multinomial(flat, num_samples=1).squeeze(-1)
+    return idx.reshape(logits.shape[:-1])
+
+
+def gather_component(
+    x: torch.Tensor,        # (..., S, E) or (..., S)
+    idx: torch.Tensor,      # (...,)
+    comp_dim: int = -2      # dimension of S in x
+) -> torch.Tensor:
+    """
+    Gathers x at indices idx along comp_dim.
+    If x is (..., S, E) and idx is (...), returns (..., E).
+    If x is (..., S) and idx is (...), returns (...).
+    """
+    # Move comp_dim to -1 or -2 handling
+    if x.ndim == idx.ndim + 1:
+        # x: (..., S)
+        gather_idx = idx.unsqueeze(-1)
+        out = x.gather(dim=comp_dim, index=gather_idx).squeeze(-1)
+        return out
+    elif x.ndim == idx.ndim + 2:
+        # x: (..., S, E)
+        E = x.shape[-1]
+        gather_idx = idx.unsqueeze(-1).unsqueeze(-1).expand(*idx.shape, 1, E)
+        out = x.gather(dim=comp_dim, index=gather_idx).squeeze(comp_dim)
+        return out
+    else:
+        raise ValueError(f"Unsupported shapes: x {x.shape}, idx {idx.shape}")
+
+
+class IndexedMixture:
+    """
+    Mixture that samples only the chosen component.
+
+    logits: (..., S)
+    params: any tensors with an S dimension aligned to logits
+    make_comp: function that takes gathered params and returns a torch.distributions.Distribution
+    """
+    def __init__(self, logits: torch.Tensor, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, bounded: bool,
+                 clamp_eps: float = 1e-2, eps_scale: float = 1e-6, chol_jitter: float = 1e-6):
+        self.logits = logits
+        self.metric = metric
+        self.metric.make_pseudoinverse()
+
+        self.params = {"center": center, "scale": scale}
+        self.kwargs = {"bounded": bounded,"clamp_eps": clamp_eps, "eps_scale": eps_scale, "chol_jitter": chol_jitter}
+
+    def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
+        # sample component indices
+        idx = sample_indexed_mixture(self.logits)  # (...,)
+        # gather params for chosen component
+        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
+        # sample from that component
+        comp = self.metric.build_distribution_from_center(**gathered, **self.kwargs)
+        return comp.sample(sample_shape)
+
+    def rsample(self, sample_shape=torch.Size()) -> torch.Tensor:
+        idx = sample_indexed_mixture(self.logits)
+        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
+        comp = self.metric.build_distribution_from_center(**gathered, **self.kwargs)
+        return comp.rsample(sample_shape)
+
+    def log_prob(self, value: torch.Tensor, top_k: int=None) -> torch.Tensor:
+        """
+        Exact mixture log_prob computed as logsumexp over components.
+
+        comp_log_prob(value, **params) must return log_prob_x of shape (..., S)
+        """
+        # log mix probs in fp32
+        if top_k is not None:
+            top_k_logits, _ = torch.topk(self.logits.float(), dim=-1, k=top_k)
+            log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
+        else:
+            log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
+
+        # component log probs: (..., S)
+        v = value.unsqueeze(-2).float()
+        comp = self.metric.build_distribution_from_center(**self.params, **self.kwargs)
+        log_px = comp.log_prob(v)              # compute in fp32 internally if needed
+
+        z = log_mix + log_px
+        return torch.logsumexp(z, dim=-1).to(log_px.dtype)
