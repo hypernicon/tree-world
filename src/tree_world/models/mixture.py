@@ -27,6 +27,7 @@ def gather_component(
     If x is (..., S, E) and idx is (...), returns (..., E).
     If x is (..., S) and idx is (...), returns (...).
     """
+    print(f"x: {x.shape}, idx: {idx.shape}")
     # Move comp_dim to -1 or -2 handling
     if x.ndim == idx.ndim + 1:
         if x.ndim == 3:
