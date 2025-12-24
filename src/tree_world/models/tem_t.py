@@ -4,7 +4,9 @@ import torch.distributions as D
 
 from typing import Optional, Union
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
-from .metric import PseudoMetric, sample_indexed_mixture, gather_component
+from .metric import PseudoMetric, IndexedLowRankGaussianMixture
+from .fourier_metric import IndexedFourierMixture, FourierCodeDistribution
+from .mixture import IndexedGaussianMixture
 
 
 def check_nan_inf(name, t):
@@ -18,7 +20,7 @@ def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_
     deltas = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)
 
     # deltas has shape (batch_size, time_steps, J, d)
-    return deltas.var(dim=-2).mean()
+    return deltas.var(dim=-1).mean()
 
 
 def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attn_mask: Optional[torch.Tensor]=None, num_heads: int=1):
@@ -30,72 +32,6 @@ def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: 
     result = torch.nn.functional.scaled_dot_product_attention(query, key, value, attn_mask=attn_mask)
     result = result.transpose(1, 2).reshape(B, T, -1)
     return result
-
-
-class IndexedGaussianMixture:
-    """
-    Mixture that samples only the chosen component.
-
-    logits: (..., S)
-    params: any tensors with an S dimension aligned to logits
-    make_comp: function that takes gathered params and returns a torch.distributions.Distribution
-    """
-    def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor, bounded: bool, bounded_eps: float = 1e-2):
-        self.logits = logits
-        self.bounded = bounded
-        self.bounded_eps = bounded_eps
-
-        self.params = {"loc": loc, "scale": scale}
-    
-    def _build_distribution(self, loc: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
-        if self.bounded:
-            loc = loc.clamp(-1.0 + self.bounded_eps, 1.0 - self.bounded_eps)
-        comp = D.Independent(D.Normal(loc, scale), 1)
-        if self.bounded:
-            comp = D.TransformedDistribution(comp, D.TanhTransform(cache_size=1))
-        return comp
-
-    def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
-        # sample component indices
-        idx = sample_indexed_mixture(self.logits)  # (...,)
-        # gather params for chosen component
-        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
-        if self.bounded:
-            gathered["loc"] = gathered["loc"].clamp(-1.0 + self.bounded_eps, 1.0 - self.bounded_eps)
-
-        comp = self._build_distribution(gathered["loc"], gathered["scale"])
-        return comp.sample(sample_shape)
-
-    def rsample(self, sample_shape=torch.Size()) -> torch.Tensor:
-        idx = sample_indexed_mixture(self.logits)
-        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
-        comp = self._build_distribution(gathered["loc"], gathered["scale"])
-        return comp.rsample(sample_shape)
-
-    def log_prob(self, value: torch.Tensor, top_k: int=None) -> torch.Tensor:
-        """
-        Exact mixture log_prob computed as logsumexp over components.
-
-        comp_log_prob(value, **params) must return log_prob_x of shape (..., S)
-        """
-        # log mix probs in fp32
-        if top_k is not None and top_k < self.logits.shape[-1]:
-            top_k_logits, top_k_indices = torch.topk(self.logits.float(), dim=-1, k=top_k)
-            log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
-            loc = gather_component(self.params["loc"], top_k_indices, comp_dim=-2)
-            scale = gather_component(self.params["scale"], top_k_indices, comp_dim=-2)
-        else:
-            log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
-            loc = self.params["loc"]
-            scale = self.params["scale"]
-
-        # component log probs: (..., S)
-        v = value.unsqueeze(-2).float()
-        comp = self._build_distribution(loc, scale)
-        log_px = comp.log_prob(v)              # compute in fp32 internally if needed
-
-        z = log_mix + log_px
-        return torch.logsumexp(z, dim=-1).to(log_px.dtype)
 
 
 class ErrorMLP(torch.nn.Module):
@@ -226,7 +162,7 @@ class TemTransformerLayer(torch.nn.Module):
 
 
 class MetricSampler(torch.nn.Module):
-    def __init__(self, qk_metric: PseudoMetric, v_metric: PseudoMetric, v_error_mlp: ErrorMLP, qk_dim: int, bounded: bool=False):
+    def __init__(self, qk_metric: PseudoMetric, v_metric: PseudoMetric, v_error_mlp: ErrorMLP, qk_dim: int, location: bool=False):
         super().__init__()
         self.qk_metric = qk_metric
         self.v_metric = v_metric
@@ -234,7 +170,7 @@ class MetricSampler(torch.nn.Module):
         self.qk_dim = qk_dim
 
         self.scale_factor = qk_dim ** -0.5
-        self.bounded = bounded
+        self.location = location
     
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
                 close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0):
@@ -263,12 +199,12 @@ class MetricSampler(torch.nn.Module):
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
         qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 
-        dist = IndexedGaussianMixture(
-            logits=-0.5 * qk_distances, 
-            loc=value[:, None, :, :].expand(-1, T, -1, -1), 
-            scale=value_std[:, None, :, :].expand(-1, T, -1, -1), 
-            bounded=self.bounded,
-            bounded_eps=1e-2
+        mixture_class = IndexedLowRankGaussianMixture if not self.location else IndexedFourierMixture
+        dist = mixture_class(
+            self.v_metric,
+            -0.5 * qk_distances,                              #  logits
+            value[:, None, :, :].expand(-1, T, -1, -1),       #  center
+            value_std[:, None, :, :].expand(-1, T, -1, -1),   #  scale
         )
         return dist, invalid_mask.squeeze(-1)
 
@@ -341,11 +277,9 @@ class GeometricActionDecoder(torch.nn.Module):
         else:
             return next_location
     
-    def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor, bounded_eps: float=1e-2):
+    def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor):
         scale = self.error_mlp(mean_location)
-        loc = mean_location.clamp(-1.0 + bounded_eps, 1.0 - bounded_eps)
-        comp = D.Independent(D.Normal(loc, scale), 1)
-        comp = D.TransformedDistribution(comp, D.TanhTransform(cache_size=1))
+        comp = FourierCodeDistribution(self.metric, mean_location, scale)
         return comp.log_prob(location)
 
 
@@ -369,10 +303,10 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
 
         self.location_refiner = MetricSampler(
-            self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim, bounded=True
+            self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim, location=True
         )
         self.sensory_predictor = MetricSampler(
-            self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim, bounded=False
+            self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim, location=False
         )
 
         self.geometric_action_decoder = GeometricActionDecoder(
@@ -461,7 +395,7 @@ class TemLocalizer(torch.nn.Module):
             )
 
             with torch.no_grad():
-                sensory_location = location_distribution.sample().clamp(min=-1+1e-4, max=1-1e-4)
+                sensory_location, _ = location_distribution.sample().clamp(min=-1+1e-4, max=1-1e-4)
 
             location_disagreement = self.location_metric.psuedo_distance(geometric_location, sensory_location)
 
@@ -469,7 +403,9 @@ class TemLocalizer(torch.nn.Module):
                 break
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
-        next_location = location_distribution.sample().clamp(min=-1+1e-2, max=1-1e-2)
+        with torch.no_grad():
+            next_location, displacements = location_distribution.sample()
+
         if B > 1:
             print(f"next_location: min: {next_location.min().item()}, mean: {next_location.mean().item()}, max: {next_location.max().item()}")
         check_nan_inf("next_location", next_location) 
@@ -478,7 +414,7 @@ class TemLocalizer(torch.nn.Module):
         geometric_logprobs = self.geometric_action_decoder.logprobs(
             next_location_minus_prefix, geometric_location_minus_prefix
         )
-        sensory_location_logprobs = location_distribution.log_prob(next_location, top_k=32)
+        sensory_location_logprobs = location_distribution.log_prob(next_location, displacements, top_k=32)
         sensory_location_logprobs_minus_prefix, _ = self.remove_prefix(
             sensory_location_logprobs, prefix_length, batch_lengths
         )

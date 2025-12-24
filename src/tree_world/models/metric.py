@@ -1,27 +1,12 @@
 import torch
 import torch.distributions as D
 import math
-from typing import Optional, Union, Callable, Tuple
+from typing import Optional, Union
 
-from ..fourier import make_alphas, make_lattice_basis
+from .mixture import IndexedMixture
 
 
 LOG2PI = math.log(2.0 * math.pi)
-
-
-def atanh(x):
-    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
-
-
-import math
-import torch
-import torch.distributions as D
-
-LOG2PI = math.log(2.0 * math.pi)
-
-def atanh(x: torch.Tensor) -> torch.Tensor:
-    # stable atanh for |x|<1
-    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
 
 
 def stable_right_inverse(W: torch.Tensor, tau: float = 1e-3) -> torch.Tensor:
@@ -198,76 +183,10 @@ class EmbeddedLowRankGaussian(D.Distribution):
         return lp.reshape(target_shape[:-1]).to(dtype)
 
 
-class EmbeddedLowRankTanhGaussian(D.Distribution):
-    """
-    l = tanh(y), where y ~ EmbeddedLowRankGaussian(...)
-    Intrinsic density in l-space (again, on the pushed manifold in (-1,1)^E).
-    """
-    support = D.constraints.interval(-1.0, 1.0)
-    has_rsample = True
-
-    def __init__(self, base: EmbeddedLowRankGaussian, clamp_eps: float = 1e-2, validate_args=None):
-        self.base = base
-        self.clamp_eps = float(clamp_eps)
-        super().__init__(batch_shape=base.batch_shape, event_shape=base.event_shape, validate_args=validate_args)
-
-    def rsample(self, sample_shape=torch.Size()):
-        y = self.base.rsample(sample_shape)
-        l = torch.tanh(y)
-        # IMPORTANT for bf16: clamp in fp32 with eps big enough (you found 1e-2 works)
-        l = l.float().clamp(-1.0 + self.clamp_eps, 1.0 - self.clamp_eps).to(y.dtype)
-        return l
-
-    def log_prob(self, value: torch.Tensor) -> torch.Tensor:
-        # clamp away from ±1 in fp32
-        l = value.float().clamp(-1.0 + self.clamp_eps, 1.0 - self.clamp_eps)
-
-        # IMPORTANT: broadcast l to base.loc shape (batch+(E,))
-        # base.loc is the authoritative batch shape, e.g. (B,T,S,E)
-        l = l.expand_as(self.base.loc).to(self.base.loc.dtype)
-
-        # invert: y = atanh(l)
-        y = atanh(l)
-
-        # base intrinsic log_prob in y-space (this will now match shapes)
-        lp_y = self.base.log_prob(y)
-
-        # compute d = 1 - l^2
-        d = (1.0 - l.pow(2)).clamp_min(0.0)   # (B,T,S,E)
-
-        # scale broadcast to same shape
-        scale = self.base.scale.expand_as(self.base.loc)
-        scale = scale.float().clamp_min(self.base.eps_scale).to(self.base.loc.dtype)
-
-        # diag vectors for intrinsic logdet metric
-        diag_y = scale.pow(2)                 # (B,T,S,E)
-        diag_l = (scale * d).pow(2)           # (B,T,S,E)
-
-        E = self.base._E
-        logdetGy = self.base._intrinsic_logdet_metric(diag_y.reshape(-1, E)).reshape(lp_y.shape)
-        logdetGl = self.base._intrinsic_logdet_metric(diag_l.reshape(-1, E)).reshape(lp_y.shape)
-
-        lp_l = lp_y + 0.5 * (logdetGy - logdetGl)
-        return lp_l
-
-
 class PseudoMetric(torch.nn.Module):
-    def __init__(self, vector_dim: int, dim: int=2, scale: float=10.0, ratio: float=math.sqrt(2.0), alphas_trainable: bool=False,
-                 metric_rank: Optional[int]=None):
+    def __init__(self, vector_dim: int, metric_rank: Optional[int]=None):
         super().__init__()
         self.vector_dim = vector_dim
-
-        # alphas = make_alphas(vector_dim, dim, scale, ratio)
-        # lattice_basis, K, K_dagger = make_lattice_basis(alphas, dim)
-
-        # if alphas_trainable:
-        #     self.alphas = torch.nn.Parameter(alphas)
-        # else:
-        #     self.alphas = torch.nn.Buffer(alphas)
-
-        # self.lattice_basis = torch.nn.Buffer(lattice_basis)
-        # self.K = torch.nn.Buffer(K)
-        # self.K_dagger = torch.nn.Buffer(K_dagger)
     
         if metric_rank is not None:
             self.metric_rank = min(vector_dim, metric_rank)
@@ -304,7 +223,7 @@ class PseudoMetric(torch.nn.Module):
 
         return self.scale_factor * base
 
-    def psuedo_distance(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False, squared: bool=False, scale: Optional[Union[float, torch.Tensor]]=None):
+    def pseudo_distance(self, location1: torch.Tensor, location2: torch.Tensor, prepared_k: bool=False, squared: bool=False, scale: Optional[Union[float, torch.Tensor]]=None):
         if scale is not None:
             if isinstance(scale, torch.Tensor):
                 while scale.ndim < location1.ndim:
@@ -396,8 +315,6 @@ class PseudoMetric(torch.nn.Module):
         self,
         center: torch.Tensor,        # (B,S,E) or (B,E)
         scale: torch.Tensor,          # broadcastable to center, e.g. (B,S,E) or scalar
-        bounded: bool,
-        clamp_eps: float = 1e-2,
         eps_scale: float = 1e-6,
         chol_jitter: float = 1e-6,
     ):
@@ -415,113 +332,15 @@ class PseudoMetric(torch.nn.Module):
             eps_scale=eps_scale,
             chol_jitter=chol_jitter,
         )
-
-        if bounded:
-            return EmbeddedLowRankTanhGaussian(base, clamp_eps=clamp_eps)
-        else:
-            return base
+        
+        return base
 
 
-def sample_indexed_mixture(
-    logits: torch.Tensor,  # (B,T,S) or (...,S)
-) -> torch.Tensor:
-    """
-    Samples mixture component indices without constructing a Distribution.
-    Returns indices of shape logits.shape[:-1], values in [0,S).
-    """
-    # Always do categorical sampling in fp32 for stability in bf16
-    probs = torch.nn.functional.softmax(logits.float(), dim=-1)
-    # multinomial expects 2D; flatten leading dims
-    flat = probs.reshape(-1, probs.shape[-1])
-    idx = torch.multinomial(flat, num_samples=1).squeeze(-1)
-    return idx.reshape(logits.shape[:-1])
+class IndexedLowRankGaussianMixture(IndexedMixture):
+    def __init__(self, logits: torch.Tensor, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor):
 
+        super().__init__(logits, self.distribution_builder, metric, center, scale)
+    
+    def distribution_builder(self, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
+        return metric.build_distribution_from_center(center, scale)
 
-def gather_component(
-    x: torch.Tensor,        # (..., S, E) or (..., S)
-    idx: torch.Tensor,      # (...,)
-    comp_dim: int = -2      # dimension of S in x
-) -> torch.Tensor:
-    """
-    Gathers x at indices idx along comp_dim.
-    If x is (..., S, E) and idx is (...), returns (..., E).
-    If x is (..., S) and idx is (...), returns (...).
-    """
-    # Move comp_dim to -1 or -2 handling
-    if x.ndim == idx.ndim + 1:
-        B, Tx, S, E = x.shape
-        B, T, K = idx.shape
-        if Tx != T:
-            x = x.expand(B, T, S, E)
-        gather_idx = idx.unsqueeze(-1).expand(B, T, K, E)
-        out = x.gather(dim=comp_dim, index=gather_idx).squeeze(-1)
-        return out
-    elif x.ndim == idx.ndim + 2:
-        # x: (..., S, E)
-        B, Tx, S, E = x.shape
-        B, T = idx.shape
-        if Tx != T:
-            x = x.expand(B, T, S, E)
-        gather_idx = idx.unsqueeze(-1).unsqueeze(-1).expand(B, T, 1, E)
-        out = x.gather(dim=comp_dim, index=gather_idx).squeeze(comp_dim)
-        return out
-    else:
-        raise ValueError(f"Unsupported shapes: x {x.shape}, idx {idx.shape}")
-
-
-class IndexedMixture:
-    """
-    Mixture that samples only the chosen component.
-
-    logits: (..., S)
-    params: any tensors with an S dimension aligned to logits
-    make_comp: function that takes gathered params and returns a torch.distributions.Distribution
-    """
-    def __init__(self, logits: torch.Tensor, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, bounded: bool,
-                 clamp_eps: float = 1e-2, eps_scale: float = 1e-2, chol_jitter: float = 1e-3):
-        self.logits = logits
-        self.metric = metric
-        self.metric.make_pseudoinverse()
-
-        self.params = {"center": center, "scale": scale}
-        self.kwargs = {"bounded": bounded,"clamp_eps": clamp_eps, "eps_scale": eps_scale, "chol_jitter": chol_jitter}
-
-    def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
-        # sample component indices
-        idx = sample_indexed_mixture(self.logits)  # (...,)
-        # gather params for chosen component
-        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
-        # sample from that component
-        comp = self.metric.build_distribution_from_center(**gathered, **self.kwargs)
-        return comp.sample(sample_shape)
-
-    def rsample(self, sample_shape=torch.Size()) -> torch.Tensor:
-        idx = sample_indexed_mixture(self.logits)
-        gathered = {k: gather_component(v, idx, comp_dim=-2) for k, v in self.params.items()}
-        comp = self.metric.build_distribution_from_center(**gathered, **self.kwargs)
-        return comp.rsample(sample_shape)
-
-    def log_prob(self, value: torch.Tensor, top_k: int=None) -> torch.Tensor:
-        """
-        Exact mixture log_prob computed as logsumexp over components.
-
-        comp_log_prob(value, **params) must return log_prob_x of shape (..., S)
-        """
-        # log mix probs in fp32
-        if top_k is not None and top_k < self.logits.shape[-1]:
-            top_k_logits, top_k_indices = torch.topk(self.logits.float(), dim=-1, k=top_k)
-            log_mix = torch.log_softmax(top_k_logits.float(), dim=-1)  # (..., top_k)
-            center = gather_component(self.params["center"], top_k_indices, comp_dim=-2)
-            scale = gather_component(self.params["scale"], top_k_indices, comp_dim=-2)
-        else:
-            log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
-            center = self.params["center"]
-            scale = self.params["scale"]
-
-        # component log probs: (..., S)
-        v = value.unsqueeze(-2).float()
-        comp = self.metric.build_distribution_from_center(center=center, scale=scale, **self.kwargs)
-        log_px = comp.log_prob(v)              # compute in fp32 internally if needed
-
-        z = log_mix + log_px
-        return torch.logsumexp(z, dim=-1).to(log_px.dtype)
