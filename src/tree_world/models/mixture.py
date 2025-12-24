@@ -27,15 +27,13 @@ def gather_component(
     If x is (..., S, E) and idx is (...), returns (..., E).
     If x is (..., S) and idx is (...), returns (...).
     """
-    print(f"x: {x.shape}, idx: {idx.shape}")
-    # Move comp_dim to -1 or -2 handling
     if x.ndim == idx.ndim + 1:
         if x.ndim == 3:
             B, Tx, S = x.shape
             B, T = idx.shape
             if Tx != T:
                 x = x.expand(B, T, S)
-            gather_idx = idx.unsqueeze(-1).expand(B, T, K)
+            gather_idx = idx.unsqueeze(-1).expand(B, T, 1)
             out = x.gather(dim=-1, index=gather_idx).squeeze(-1)
             return out
         else:  # x.ndim == 4
