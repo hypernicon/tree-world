@@ -131,6 +131,8 @@ class FourierCodeDistribution(D.Distribution):
             alphas = alphas[None, ...]
         alphas = alphas.transpose(-2, -1) # (..., J, d+1)
         jac_weights = (alphas.square() * reference_location.square().sum(dim=-1)).sum(dim=-2)
+        print(f"jac_weights (a): {jac_weights.shape}")
+        print(f"jac_weights (a): {jac_weights}")
 
         # K is (d+1, d); need (wK)^T K = (..., d+1, d+1)
         K = self.metric.K
@@ -138,9 +140,13 @@ class FourierCodeDistribution(D.Distribution):
             K = K[None, ...]
         wK = (jac_weights[..., None] * K)
         jac_squared = K.transpose(-2, -1) @ wK
+        print(f"jac_squared (a): {jac_squared.shape}")
+        print(f"jac_squared (a): {jac_squared}")
 
         eps = 1e-6
         I = torch.eye(self.metric.dim, device=jac_squared.device, dtype=torch.float32)
+        while I.ndim < jac_squared.ndim:
+            I = I[None, ...]
         jac_squared = jac_squared.float() + eps * I
         print(f"jac_squared: {jac_squared.shape}")
         print(f"jac_squared: {jac_squared}")
