@@ -90,20 +90,25 @@ class FourierMetric(torch.nn.Module):
         return next_location.reshape_as(location)
     
     def apply_displacement(self, displacement: torch.Tensor, location: torch.Tensor):
-        # displacement has shape (..., J, d)
+        # displacement has shape (..., d)
 
         K = self.K
         while K.ndim < displacement.ndim + 1:
             K = K[None, ...]
-        delta_thetas = (K @ displacement[..., None]).squeeze(-1) # (..., J, d+1)
+        delta_thetas = (K @ displacement[..., None]).squeeze(-1) # (..., d+1)
 
-        alphas = self.alphas
+        delta_thetas = delta_thetas[..., None, :]
+
+        alphas = self.alphas[..., None]
         while alphas.ndim < delta_thetas.ndim:
             alphas = alphas[None, ...]
-        alphas = alphas.transpose(-2, -1) # (..., J, 1)
         delta_thetas = delta_thetas * alphas
 
         return self.block_rotate(location, delta_thetas)
+
+    def sample(self, shape: Tuple[int, ...] = torch.Size(), device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
+        thetas = torch.empty(shape + (self.location_dim // 2,), device=device, dtype=dtype).uniform_(-math.pi, math.pi)
+        return torch.stack([torch.cos(thetas), torch.sin(thetas)], dim=-1).view(shape + (self.location_dim,))
 
 
 class FourierCodeDistribution(D.Distribution):

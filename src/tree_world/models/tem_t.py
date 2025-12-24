@@ -334,7 +334,7 @@ class TemLocalizer(torch.nn.Module):
             batch_lengths = T * torch.ones((B,), dtype=torch.long, device=sensory.device)
 
         if prior_location is None:
-            initial_location = torch.empty((B, 1, self.location_dim), dtype=sensory.dtype, device=sensory.device).uniform_(-1, 1)
+            initial_location = self.location_metric.sample((B, 1), device=sensory.device, dtype=sensory.dtype)
             return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0, 0.0
         
         # These next two ifs let us just supply the previous output location and action sequence, and extend them to the new length
