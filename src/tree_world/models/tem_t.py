@@ -207,8 +207,8 @@ class MetricSampler(torch.nn.Module):
         else:
             v_std = value_std[:, None, :, :].expand(-1, T, -1, -1)
         dist = mixture_class(
-            self.v_metric,
             -0.5 * qk_distances,                              #  logits
+            self.v_metric,
             value[:, None, :, :].expand(-1, T, -1, -1),       #  center
             v_std,   #  scale
         )
