@@ -17,10 +17,14 @@ def check_nan_inf(name, t):
 
 
 def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
-    deltas = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)
+    deltas = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)  # (B, T, J, d)
+    mean_deltas = deltas.mean(dim=-2)  # (B, T, d)
+    J = deltas.shape[-2]
 
-    # deltas has shape (batch_size, time_steps, J, d)
-    return deltas.var(dim=-1).mean()
+    dev_deltas = deltas - mean_deltas[..., None, :]  # (B, T, J, d)
+    variances = dev_deltas.square().sum(dim=-1).mean(dim=-1) * (J / (J - 1))  # (B, T)
+
+    return variances.mean()
 
 
 def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attn_mask: Optional[torch.Tensor]=None, num_heads: int=1):
@@ -245,7 +249,7 @@ class GeometricActionDecoder(torch.nn.Module):
         next_location = torch.cat([location[:, :1], next_location], dim=1)
 
         if regularize:
-            displacement_loss = loss_for_deltas(thetas, self.K_dagger, self.lattice_basis, self.alphas)
+            displacement_loss = loss_for_deltas(thetas, self.metric.K_dagger, self.metric.lattice_basis, self.metric.alphas)
 
         if not allow_extension:
             next_location = next_location[:, :-1]
