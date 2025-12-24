@@ -139,7 +139,11 @@ class FourierCodeDistribution(D.Distribution):
         wK = (jac_weights[..., None] * K)
         jac_squared = K.transpose(-2, -1) @ wK
 
-        self.logdet_jac = - 0.5 * torch.logdet(jac_squared.float()).to(self.dtype)
+        eps = 1e-6
+        I = torch.eye(self.metric.dim, device=jac_squared.device, dtype=torch.float32)
+        jac_squared = jac_squared.float() + eps * I
+        logdet = torch.logdet(jac_squared)
+        self.logdet_jac = - 0.5 * logdet.to(self.dtype)
 
         super().__init__(batch_shape=batch_shape, event_shape=(self.metric.location_dim,), validate_args=validate_args)
 
