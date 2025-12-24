@@ -73,10 +73,14 @@ def solve_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice
     J, _, _ = lattice_basis.shape
     shape = delta_thetas.shape[:-1] + (J, dplus, 1)
     delta_thetas = delta_thetas.view(shape)
-    displacement_base = (K_dagger[None, ...] @ delta_thetas).view(shape[:-1] + (d,)) / alphas[None, :, None]
+    while K_dagger.ndim < delta_thetas.ndim:
+        K_dagger = K_dagger[None, ...]
+    displacement_base = (K_dagger @ delta_thetas).view(shape[:-1] + (d,)) / alphas[None, :, None]
     reference_displacement = displacement_base[..., 0, :]
     errors = reference_displacement[..., None, :] - displacement_base
-    lattice_basis = lattice_basis.view(1, 1, J, d, d)
+    lattice_basis = lattice_basis.view(J, d, d)
+    while lattice_basis.ndim < errors.ndim + 1:
+        lattice_basis = lattice_basis[None, ...]
     offsets = torch.linalg.solve(lattice_basis.float(), errors[..., None].float()).round().to(delta_thetas.dtype)
     deltas = displacement_base + (lattice_basis @ offsets).squeeze(-1)
     return deltas.view(shape[:-1] + (d,))
