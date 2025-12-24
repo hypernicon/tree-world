@@ -264,7 +264,8 @@ class GeometricActionDecoder(torch.nn.Module):
             return next_location
     
     def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor):
-        comp = FourierCodeDistribution(self.metric, mean_location, self.scale)
+        B, T, D = location.shape
+        comp = FourierCodeDistribution(self.metric, mean_location, self.scale.expand(B, T))
         return comp.log_prob(location)
 
 
