@@ -5,7 +5,7 @@ import torch.distributions as D
 from typing import Optional, Union
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .metric import PseudoMetric, IndexedLowRankGaussianMixture
-from .fourier_metric import IndexedFourierMixture, FourierCodeDistribution
+from .fourier_metric import IndexedFourierMixture, FourierCodeDistribution, FourierMetric
 from .mixture import IndexedGaussianMixture
 
 
@@ -210,9 +210,9 @@ class MetricSampler(torch.nn.Module):
 
 
 class GeometricActionDecoder(torch.nn.Module):
-    def __init__(self, location_dim: int, action_dim: int, hidden_dim: int, dropout: float=0.25, 
-                 physical_dim: int=2, physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
+    def __init__(self, metric: FourierMetric, location_dim: int, action_dim: int, hidden_dim: int, dropout: float=0.25):
         super().__init__()
+        self.metric = metric
         self.location_dim = location_dim
         self.action_dim = action_dim
         self.hidden_dim = hidden_dim
@@ -226,15 +226,6 @@ class GeometricActionDecoder(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Linear(hidden_dim, location_dim // 2),
         )
-
-        self.physical_dim = physical_dim
-        self.physical_scale = physical_scale
-        self.physical_ratio = physical_ratio
-        self.alphas = torch.nn.Buffer(make_alphas(location_dim, physical_dim, physical_scale, physical_ratio))
-        lattice_basis, K, K_dagger = make_lattice_basis(self.alphas, physical_dim)
-        self.lattice_basis = torch.nn.Buffer(lattice_basis)
-        self.K_dagger = torch.nn.Buffer(K_dagger)
-        self.K = torch.nn.Buffer(K)
 
         self.error_mlp = ErrorMLP(location_dim, location_dim, scale=2.5)
 
@@ -252,17 +243,7 @@ class GeometricActionDecoder(torch.nn.Module):
         # if we wanted to be explicit (since our actions are actually displacements in physical space), we could do this:
         # thetas = self.alphas[None, None, :, None] * ((self.K[None, None, ...] @ action[..., None]).view(B, T, -1, self.physical_dim + 1)) 
         # thetas = thetas.view(B, T, -1)
-        cos_thetas = torch.cos(thetas)
-        sin_thetas = torch.sin(thetas)
-
-        location_blocks = location.reshape(B, T, -1, 2)
-        location_cos_thetas = location_blocks * cos_thetas[..., None]
-        location_sin_thetas = location_blocks * sin_thetas[..., None]
-
-        next_location = torch.stack([
-            location_cos_thetas[..., 0] - location_sin_thetas[..., 1],
-            location_sin_thetas[..., 0] + location_cos_thetas[..., 1],
-        ], dim=-1).reshape(B, T, D)
+        next_location = self.metric.apply_displacement(thetas, location).view(B, T, D)
 
         # shift the location one step forward to align with the past; output is one step longer than the input
         next_location = torch.cat([location[:, :1], next_location], dim=1)
@@ -272,6 +253,7 @@ class GeometricActionDecoder(torch.nn.Module):
 
         if not allow_extension:
             next_location = next_location[:, :-1]
+
         if regularize:
             return next_location, displacement_loss
         else:
@@ -295,9 +277,9 @@ class TemLocalizer(torch.nn.Module):
         self.num_heads = num_heads
         self.dropout = dropout
 
-        self.location_metric = PseudoMetric(location_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
-        self.sensory_metric = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
-        self.sensory_metric_with_location = PseudoMetric(sensory_dim, dim=physical_dim, scale=physical_scale, ratio=physical_ratio, metric_rank=embed_dim)
+        self.location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
+        self.sensory_metric = PseudoMetric(sensory_dim, metric_rank=embed_dim)
+        self.sensory_metric_with_location = PseudoMetric(sensory_dim, metric_rank=embed_dim)
 
         self.location_error_mlp = ErrorMLP(location_dim, location_dim, scale=2.5)
         self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
@@ -310,7 +292,7 @@ class TemLocalizer(torch.nn.Module):
         )
 
         self.geometric_action_decoder = GeometricActionDecoder(
-            location_dim, action_dim, action_hidden_dim, dropout, physical_dim, physical_scale, physical_ratio
+            self.location_metric, location_dim, action_dim, action_hidden_dim, dropout
         )
 
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
