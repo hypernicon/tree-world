@@ -162,11 +162,10 @@ class TemTransformerLayer(torch.nn.Module):
 
 
 class MetricSampler(torch.nn.Module):
-    def __init__(self, qk_metric: PseudoMetric, v_metric: PseudoMetric, v_error_mlp: ErrorMLP, qk_dim: int, location: bool=False):
+    def __init__(self, qk_metric: PseudoMetric, v_metric: PseudoMetric, qk_dim: int, location: bool=False):
         super().__init__()
         self.qk_metric = qk_metric
         self.v_metric = v_metric
-        self.v_error_mlp = v_error_mlp
         self.qk_dim = qk_dim
 
         self.scale_factor = qk_dim ** -0.5
@@ -282,10 +281,10 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
 
         self.location_refiner = MetricSampler(
-            self.sensory_metric_with_location, self.location_metric, self.location_error_mlp, self.sensory_dim, location=True
+            self.sensory_metric_with_location, self.location_metric, self.sensory_dim, location=True
         )
         self.sensory_predictor = MetricSampler(
-            self.location_metric, self.sensory_metric, self.sensory_error_mlp, self.location_dim, location=False
+            self.location_metric, self.sensory_metric, self.location_dim, location=False
         )
 
         self.geometric_action_decoder = GeometricActionDecoder(
