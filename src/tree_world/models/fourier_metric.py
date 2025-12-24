@@ -107,7 +107,8 @@ class FourierMetric(torch.nn.Module):
         return self.block_rotate(location, delta_thetas)
 
     def sample(self, shape: Tuple[int, ...] = torch.Size(), device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
-        thetas = torch.empty(shape + (self.location_dim // 2,), device=device, dtype=dtype).uniform_(-math.pi, math.pi)
+        thetas = torch.empty(shape + (self.location_dim // 2 // (self.dim + 1),), device=device, dtype=dtype).uniform_(-math.pi, math.pi)
+        thetas = thetas[:, None].expand(shape + (self.location_dim // 2,))  # <-- within the same module, phase is shared
         return torch.stack([torch.cos(thetas), torch.sin(thetas)], dim=-1).view(shape + (self.location_dim,))
 
 
