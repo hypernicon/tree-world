@@ -156,6 +156,8 @@ class FourierCodeDistribution(D.Distribution):
         while scale.ndim < u.ndim:
             scale = scale[None, ...]
         deltas = scale * u
+        print(f"deltas: {deltas.shape} -- {deltas}")
+        print(f"reference_location: {self.reference_location.shape} -- {self.reference_location}")
         locations = self.metric.apply_displacement(deltas, self.reference_location)
         return locations, deltas
     
@@ -163,7 +165,7 @@ class FourierCodeDistribution(D.Distribution):
 
     def log_prob(self, locations: torch.Tensor, displacements: Optional[torch.Tensor]=None):
         if displacements is None:
-            _, displacements = self.metric.compute_displacements(self.reference_location, value)
+            _, displacements = self.metric.compute_displacements(self.reference_location, locations)
 
         scale = self.scale[..., None]
         while scale.ndim < displacements.ndim:

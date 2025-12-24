@@ -33,8 +33,6 @@ def gather_component(
             B, T = idx.shape
             if Tx != T:
                 x = x.expand(B, T, S)
-            print(f"gather_idx: {idx.shape} -- {idx}")
-            print(f"x: {x.shape} -- {x}")
             gather_idx = idx.unsqueeze(-1).expand(B, T, 1)
             out = x.gather(dim=-1, index=gather_idx).squeeze(-1)
             return out
