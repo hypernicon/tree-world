@@ -202,11 +202,15 @@ class MetricSampler(torch.nn.Module):
         qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 
         mixture_class = IndexedLowRankGaussianMixture if not self.location else IndexedFourierMixture
+        if self.location:
+            v_std = value_std[:, None, :].expand(-1, T, -1)
+        else:
+            v_std = value_std[:, None, :, :].expand(-1, T, -1, -1)
         dist = mixture_class(
             self.v_metric,
             -0.5 * qk_distances,                              #  logits
             value[:, None, :, :].expand(-1, T, -1, -1),       #  center
-            value_std[:, None, :, :].expand(-1, T, -1, -1),   #  scale
+            v_std,   #  scale
         )
         return dist, invalid_mask.squeeze(-1)
 
