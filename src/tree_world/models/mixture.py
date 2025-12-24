@@ -52,7 +52,7 @@ def gather_component(
         if Tx != T:
             x = x.expand(B, T, S, E)
         gather_idx = idx.unsqueeze(-1).unsqueeze(-1).expand(B, T, 1, E)
-        out = x.gather(dim=-2, index=gather_idx).squeeze(comp_dim)
+        out = x.gather(dim=-2, index=gather_idx).squeeze(-2)
         return out
     else:
         raise ValueError(f"Unsupported shapes: x {x.shape}, idx {idx.shape}")
