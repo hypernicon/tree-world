@@ -142,6 +142,8 @@ class FourierCodeDistribution(D.Distribution):
         eps = 1e-6
         I = torch.eye(self.metric.dim, device=jac_squared.device, dtype=torch.float32)
         jac_squared = jac_squared.float() + eps * I
+        print(f"jac_squared: {jac_squared.shape}")
+        print(f"jac_squared: {jac_squared}")
         logdet = torch.logdet(jac_squared)
         self.logdet_jac = - 0.5 * logdet.to(self.dtype)
 
