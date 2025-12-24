@@ -69,7 +69,6 @@ def make_alphas(location_dim: int, dim: int = 2, scale: float = 10.0,
 
 
 def solve_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
-    print(f"delta_thetas: {delta_thetas.shape}, K_dagger: {K_dagger.shape}, lattice_basis: {lattice_basis.shape}, alphas: {alphas.shape}")
     d, dplus = K_dagger.shape
     J, _, _ = lattice_basis.shape
     shape = delta_thetas.shape[:-1] + (J, dplus)

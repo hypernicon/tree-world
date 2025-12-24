@@ -46,7 +46,7 @@ class FourierMetric(torch.nn.Module):
 
         # estimated displacements from thetas, made as small as possible solving across alphas -- but may not agree!
         # deltas has shape (..., J, d)
-        deltas = solve_for_deltas(delta_thetas, self.K_dagger, self.lattice_basis, self.alphas)
+        deltas = solve_for_deltas(delta_thetas.view(delta_thetas.shape[:-2] + (-1,)), self.K_dagger, self.lattice_basis, self.alphas)
         mean_deltas = deltas.mean(dim=-2)
 
         return deltas, mean_deltas
