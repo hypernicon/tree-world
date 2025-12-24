@@ -71,15 +71,12 @@ def make_alphas(location_dim: int, dim: int = 2, scale: float = 10.0,
 def solve_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
     d, dplus = K_dagger.shape
     J, _, _ = lattice_basis.shape
-    batch_size, time_steps, L = delta_thetas.shape
-    delta_thetas = delta_thetas.view(batch_size, time_steps, J, dplus, 1)
-    displacement_base = (K_dagger[None, None, None, ...] @ delta_thetas).view(batch_size, time_steps, J, d) / alphas[None, None, :, None]
-
-    # displacement_base is of shape (batch_size, time_steps, J, d)
+    shape = delta_thetas.shape[:-1] + (J, dplus, 1)
+    delta_thetas = delta_thetas.view(shape)
+    displacement_base = (K_dagger[None, ...] @ delta_thetas).view(shape[:-1] + (d,)) / alphas[None, :, None]
     reference_displacement = displacement_base[..., 0, :]
     errors = reference_displacement[..., None, :] - displacement_base
-
     lattice_basis = lattice_basis.view(1, 1, J, d, d)
     offsets = torch.linalg.solve(lattice_basis.float(), errors[..., None].float()).round().to(delta_thetas.dtype)
     deltas = displacement_base + (lattice_basis @ offsets).squeeze(-1)
-    return deltas
+    return deltas.view(shape[:-1] + (d,))
