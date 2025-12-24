@@ -21,7 +21,6 @@ def sample_indexed_mixture(
 def gather_component(
     x: torch.Tensor,        # (..., S, E) or (..., S)
     idx: torch.Tensor,      # (...,)
-    comp_dim: int = -2      # dimension of S in x
 ) -> torch.Tensor:
     """
     Gathers x at indices idx along comp_dim.
@@ -30,13 +29,22 @@ def gather_component(
     """
     # Move comp_dim to -1 or -2 handling
     if x.ndim == idx.ndim + 1:
-        B, Tx, S, E = x.shape
-        B, T, K = idx.shape
-        if Tx != T:
-            x = x.expand(B, T, S, E)
-        gather_idx = idx.unsqueeze(-1).expand(B, T, K, E)
-        out = x.gather(dim=comp_dim, index=gather_idx).squeeze(-1)
-        return out
+        if x.ndim == 3:
+            B, Tx, S = x.shape
+            B, T = idx.shape
+            if Tx != T:
+                x = x.expand(B, T, S)
+            gather_idx = idx.unsqueeze(-1).expand(B, T, K)
+            out = x.gather(dim=-1, index=gather_idx).squeeze(-1)
+            return out
+        else:  # x.ndim == 4
+            B, Tx, S, E = x.shape
+            B, T, K = idx.shape
+            if Tx != T:
+                x = x.expand(B, T, S, E)
+            gather_idx = idx.unsqueeze(-1).expand(B, T, K, E)
+            out = x.gather(dim=-2, index=gather_idx).squeeze(-1)
+            return out
     elif x.ndim == idx.ndim + 2:
         # x: (..., S, E)
         B, Tx, S, E = x.shape
@@ -44,7 +52,7 @@ def gather_component(
         if Tx != T:
             x = x.expand(B, T, S, E)
         gather_idx = idx.unsqueeze(-1).unsqueeze(-1).expand(B, T, 1, E)
-        out = x.gather(dim=comp_dim, index=gather_idx).squeeze(comp_dim)
+        out = x.gather(dim=-2, index=gather_idx).squeeze(comp_dim)
         return out
     else:
         raise ValueError(f"Unsupported shapes: x {x.shape}, idx {idx.shape}")
@@ -69,8 +77,8 @@ class IndexedMixture:
             params = self.params
             param_kwargs = self.param_kwargs
         else:
-            params = [gather_component(p, idx, comp_dim=-2) if isinstance(p, torch.Tensor) else p for p in self.params]
-            param_kwargs = {k: gather_component(v, idx, comp_dim=-2) if isinstance(v, torch.Tensor) else v for k, v in self.param_kwargs.items()}
+            params = [gather_component(p, idx) if isinstance(p, torch.Tensor) else p for p in self.params]
+            param_kwargs = {k: gather_component(v, idx) if isinstance(v, torch.Tensor) else v for k, v in self.param_kwargs.items()}
 
         return self.distribution_builder(*params, **param_kwargs)
 
