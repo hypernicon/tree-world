@@ -227,9 +227,7 @@ class GeometricActionDecoder(torch.nn.Module):
             torch.nn.Linear(hidden_dim, location_dim // 2),
         )
 
-        self.error_mlp = ErrorMLP(location_dim, location_dim, scale=2.5)
-
-        assert self.location_dim % (2 * self.physical_dim) == 0
+        self.scale = torch.nn.Parameter(torch.ones(1,1) * 5.0)
 
     def forward(self, location: torch.Tensor, action: torch.Tensor, eps: float=1e-6, 
                 allow_extension: bool=True, regularize: bool=True):
@@ -260,8 +258,7 @@ class GeometricActionDecoder(torch.nn.Module):
             return next_location
     
     def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor):
-        scale = self.error_mlp(mean_location)
-        comp = FourierCodeDistribution(self.metric, mean_location, scale)
+        comp = FourierCodeDistribution(self.metric, mean_location, self.scale)
         return comp.log_prob(location)
 
 
@@ -281,7 +278,7 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_metric = PseudoMetric(sensory_dim, metric_rank=embed_dim)
         self.sensory_metric_with_location = PseudoMetric(sensory_dim, metric_rank=embed_dim)
 
-        self.location_error_mlp = ErrorMLP(location_dim, location_dim, scale=2.5)
+        self.location_scale = torch.nn.Parameter(torch.ones(1, 1) * 5.0)
         self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
 
         self.location_refiner = MetricSampler(
@@ -372,7 +369,7 @@ class TemLocalizer(torch.nn.Module):
         for k in range(max_steps):
             location_std = self.location_error_mlp(sensory_location)
             location_distribution, location_invalid_mask = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, sensory_location, location_std,
+                sensory_plus_geometric, sensory_plus_geometric, sensory_location, self.location_scale,
                 close_to=geometric_location.detach(), close_to_factor=1.0
             )
 
