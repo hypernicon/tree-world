@@ -179,9 +179,8 @@ class MetricSampler(torch.nn.Module):
 
         # op_norm = self.qk_metric.metric_operator_norm()
         # scale = self.scale_factor ** 0.5 / (op_norm ** 0.5 + 1e-8)
-        scale = self.scale_factor ** 0.5
 
-        qk_distances = self.qk_metric.cross_distance(query, key, squared=True, scale=scale)
+        qk_distances = self.scale_factor * self.qk_metric.cross_distance(query, key, squared=True)
         check_nan_inf("qk_distances", qk_distances)
 
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
@@ -240,7 +239,7 @@ class GeometricActionDecoder(torch.nn.Module):
         # if we wanted to be explicit (since our actions are actually displacements in physical space), we could do this:
         # thetas = self.alphas[None, None, :, None] * ((self.K[None, None, ...] @ action[..., None]).view(B, T, -1, self.physical_dim + 1)) 
         # thetas = thetas.view(B, T, -1)
-        next_location = self.metric.apply_displacement(thetas, location).view(B, T, D)
+        next_location = self.metric.block_rotate(location, thetas).view(B, T, D)
 
         # shift the location one step forward to align with the past; output is one step longer than the input
         next_location = torch.cat([location[:, :1], next_location], dim=1)

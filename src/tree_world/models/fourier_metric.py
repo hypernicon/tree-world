@@ -68,6 +68,9 @@ class FourierMetric(torch.nn.Module):
             return final_squared_distances
         else:
             return (final_squared_distances + 1e-12).sqrt()
+    
+    def cross_distance(self, location1: torch.Tensor, location2: torch.Tensor, squared: bool=False):
+        return self.pseudo_distance(location1[:, :, None, ...], location2[:, None, :, ...], squared=squared)
 
     def block_rotate(self, location: torch.Tensor, thetas: torch.Tensor):
         D = location.shape[-1] // 2
