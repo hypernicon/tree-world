@@ -223,8 +223,8 @@ class IndexedFourierMixture(IndexedMixture):
         self.batch_lengths = batch_lengths
         super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths)
     
-    def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
-        return FourierCodeDistribution(metric, reference_location, scale)
+    def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
+        return FourierCodeDistribution(metric, reference_location, scale, batch_lengths)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().sample(sample_shape)
