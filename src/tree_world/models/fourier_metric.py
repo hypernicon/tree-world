@@ -6,6 +6,19 @@ from typing import Optional, Union, Callable, Tuple
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .mixture import IndexedMixture
 
+
+def check_valid_location(location: torch.Tensor):
+    if torch.isnan(location).any() or torch.isinf(location).any():
+        print(f"location BAD: nan={torch.isnan(location).any().item()} inf={torch.isinf(location).any().item()}")
+        print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
+        raise ValueError(f"location is nan/inf")
+    
+    location = location.view(-1, 2)
+    if not torch.allclose(location[:,0].square() + location[:,1].square(), torch.ones_like(location[:,0]), atol=1e-1):
+        print(f"location is not on the unit sphere: {location[0,:5].detach().cpu().float().numpy().tolist()}")
+        raise ValueError(f"location is not on the unit sphere")
+
+
 class FourierMetric(torch.nn.Module):
     def __init__(self, location_dim: int, dim: int, scale: float=1.0, ratio: float=math.sqrt(2.0), alphas_trainable: bool=False):
         super().__init__()
@@ -167,6 +180,8 @@ class FourierCodeDistribution(D.Distribution):
             scale = scale[None, ...]
         deltas = scale * u
         locations = self.metric.apply_displacement(deltas, self.reference_location)
+
+        check_valid_location(locations)
         return locations, deltas
     
     rsample = sample
@@ -195,3 +210,13 @@ class IndexedFourierMixture(IndexedMixture):
     
     def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
         return FourierCodeDistribution(metric, reference_location, scale)
+
+    def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
+        locations, displacements = super().sample(sample_shape)
+        check_valid_location(locations)
+        return locations, displacements
+    
+    def rsample(self, sample_shape: Tuple[int, ...] = torch.Size()):
+        locations, displacements = super().rsample(sample_shape)
+        check_valid_location(locations)
+        return locations, displacements
