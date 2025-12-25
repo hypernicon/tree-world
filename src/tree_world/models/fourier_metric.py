@@ -42,7 +42,7 @@ class FourierMetric(torch.nn.Module):
         c2s1 = location2[..., 0] * location1[..., 1]
         c2c1 = location2[..., 0] * location1[..., 0]
         s2s1 = location2[..., 1] * location1[..., 1]
-        delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1)
+        delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1 + 1e-8)
 
         # estimated displacements from thetas, made as small as possible solving across alphas -- but may not agree!
         # deltas has shape (..., J, d)
@@ -171,15 +171,9 @@ class FourierCodeDistribution(D.Distribution):
         if displacements is None:
             _, displacements = self.metric.compute_displacements(self.reference_location, locations)
 
-        print(f"displacements: {displacements.shape} ")
-        print(f"reference_location: {self.reference_location.shape}")
-        print(f"scale: {self.scale.shape}")
-
         scale = self.scale[..., None]
         while scale.ndim < displacements.ndim:
             scale = scale[None, ...]
-
-        print(f"scale: {scale.shape}")
 
         displacements = displacements / scale
 
