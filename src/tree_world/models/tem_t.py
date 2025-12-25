@@ -189,14 +189,14 @@ class MetricSampler(torch.nn.Module):
 
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
-        print(f"qk_distances: {qk_distances.shape} -- min: {qk_distances.min().item()}, mean: {qk_distances.mean().item()}, max: {qk_distances.max().item()}")
+        print(f"qk_distances: {qk_distances.shape} -- min: {qk_distances.min().item()}, mean: {qk_distances.clamp(max=1e4).mean().item()}, max: {qk_distances.max().item()}")
         assert not torch.isnan(qk_distances).any()
 
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
             v_scale = E ** -0.5
             close_to_distances = (v_scale * self.v_metric.pseudo_distance(value.float(), close_to.float(), squared=True))
-            print(f"close_to_distances: {close_to_distances.shape} -- min: {close_to_distances.min().item()}, mean: {close_to_distances.mean().item()}, max: {close_to_distances.max().item()}")
+            print(f"close_to_distances: {close_to_distances.shape} -- min: {close_to_distances.min().item()}, mean: {close_to_distances.clamp(max=1e4).mean().item()}, max: {close_to_distances.max().item()}")
             assert not torch.isnan(close_to_distances).any()
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
         
