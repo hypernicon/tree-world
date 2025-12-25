@@ -188,6 +188,7 @@ class MetricSampler(torch.nn.Module):
         check_nan_inf("qk_distances", qk_distances)
 
         mask = torch.triu(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=0)
+        print(f"mask: {mask.shape} -- {mask.detach().cpu().float().numpy().tolist()}")
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
         assert not torch.isnan(qk_distances).any()
 
