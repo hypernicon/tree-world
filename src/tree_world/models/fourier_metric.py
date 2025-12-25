@@ -168,7 +168,6 @@ class FourierCodeDistribution(D.Distribution):
         self.metric = metric
         self.reference_location = reference_location
         self.batch_lengths = batch_lengths
-        check_valid_location(reference_location, batch_lengths)
 
         self.dtype = reference_location.dtype
         self.device = reference_location.device
@@ -206,6 +205,7 @@ class FourierCodeDistribution(D.Distribution):
         super().__init__(batch_shape=batch_shape, event_shape=(self.metric.location_dim,), validate_args=validate_args)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
+        check_valid_location(self.reference_location, self.batch_lengths)
         # sample Delta x ~ N(0, I_M)
         u = torch.randn(sample_shape + self.batch_shape + (self.metric.dim,), device=self.device, dtype=self.dtype)
         scale = self.scale[..., None]
