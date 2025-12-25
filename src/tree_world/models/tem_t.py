@@ -176,7 +176,7 @@ class MetricSampler(torch.nn.Module):
         self.location = location
     
     def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
-                close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0):
+                close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
         B, T, _ = query.shape
         B, S, _ = key.shape
         B, S, E = value.shape
@@ -216,6 +216,7 @@ class MetricSampler(torch.nn.Module):
             self.v_metric,
             value[:, None, :, :].expand(-1, T, -1, -1),       #  center
             v_std,   #  scale
+            batch_lengths,
         )
         return dist, invalid_mask.squeeze(-1)
 
@@ -325,14 +326,14 @@ class TemLocalizer(torch.nn.Module):
         """
         return original.scatter(dim=1, index=indices, src=extracted)
 
-    def sample_location(self, initial_location: torch.Tensor, location_distribution: D.Distribution):
+    def sample_location(self, initial_location: torch.Tensor, location_distribution: D.Distribution, batch_lengths: Optional[torch.Tensor]=None):
         with torch.no_grad():
             location, deltas = location_distribution.sample()
         
         # hold initial location constant
         location[:, :1] = initial_location
 
-        check_valid_location(location)
+        check_valid_location(location, batch_lengths)
         return location, deltas
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
@@ -394,13 +395,11 @@ class TemLocalizer(torch.nn.Module):
         for k in range(max_steps):
             location_distribution, location_invalid_mask = self.location_refiner(
                 sensory_plus_geometric, sensory_plus_geometric, sensory_location, self.location_scale,
-                close_to=geometric_location.detach(), close_to_factor=1.0
+                close_to=geometric_location.detach(), close_to_factor=1.0, batch_lengths=batch_lengths
             )
 
             with torch.no_grad():
-                sensory_location, _ = self.sample_location(initial_location, location_distribution)
-            
-            check_valid_location(sensory_location)
+                sensory_location, _ = self.sample_location(initial_location, location_distribution, batch_lengths)
 
             location_disagreement = self.location_metric.pseudo_distance(geometric_location, sensory_location)
 
@@ -409,9 +408,7 @@ class TemLocalizer(torch.nn.Module):
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
         with torch.no_grad():
-            next_location, displacements = self.sample_location(initial_location, location_distribution)
-        
-        check_valid_location(next_location)
+            next_location, displacements = self.sample_location(initial_location, location_distribution, batch_lengths)
 
         if B > 1:
             print(f"next_location: min: {next_location.min().item()}, mean: {next_location.mean().item()}, max: {next_location.max().item()}")

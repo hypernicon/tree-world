@@ -7,17 +7,22 @@ from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .mixture import IndexedMixture
 
 
-def check_valid_location(location: torch.Tensor):
+def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None):
     if torch.isnan(location).any() or torch.isinf(location).any():
         print(f"location BAD: nan={torch.isnan(location).any().item()} inf={torch.isinf(location).any().item()}")
         print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
         raise ValueError(f"location is nan/inf")
     
     location = location.reshape(-1, 2)
-    if not torch.allclose(torch.norm(location, dim=-1), torch.ones_like(location[...,0]), atol=1e-1):
-        print(f"location: {location.shape} -- {torch.norm(location, dim=-1).detach().cpu().float().numpy().tolist()}")
+    location_norms = torch.norm(location, dim=-1)
+    if batch_lengths is not None:
+        batch_mask = torch.arange(location.shape[1], device=location.device)[None, :] >= batch_lengths[..., None]
+        location_norms = torch.masked_fill(location_norms, batch_mask, 1.0)
+
+    if not torch.allclose(location_norms, torch.ones_like(location_norms), atol=1e-1):
+        print(f"location_norms: {location_norms.shape} -- {location_norms.detach().cpu().float().numpy().tolist()}")
         print(f"location is not on the unit sphere: {location.detach().cpu().float().numpy().tolist()}")
-        raise ValueError(f"location is not on the unit sphere")
+        raise ValueError(f"location_norms is not on the unit sphere")
 
 
 class FourierMetric(torch.nn.Module):
@@ -134,10 +139,11 @@ class FourierCodeDistribution(D.Distribution):
     support = D.constraints.real
     has_rsample = True
 
-    def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, validate_args=None):
+    def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None, validate_args=None):
         self.metric = metric
         self.reference_location = reference_location
-        check_valid_location(reference_location)
+        self.batch_lengths = batch_lengths
+        check_valid_location(reference_location, batch_lengths)
 
         self.dtype = reference_location.dtype
         self.device = reference_location.device
@@ -207,21 +213,20 @@ class FourierCodeDistribution(D.Distribution):
 
 
 class IndexedFourierMixture(IndexedMixture):
-    def __init__(self, logits: torch.Tensor, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor):
-        check_valid_location(reference_location)
-        print(f"reference_location at mixture init: {reference_location.shape} -- {reference_location[0,:5, :10].detach().cpu().float().numpy().tolist()}")
-        super().__init__(logits, self.distribution_builder, metric, reference_location, scale)
+    def __init__(self, logits: torch.Tensor, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None):
+        check_valid_location(reference_location, batch_lengths)
+        self.batch_lengths = batch_lengths
+        super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths)
     
     def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
-        print(f"reference_location at mixture distribution builder: {reference_location.shape} -- {reference_location[0,:5, :10].detach().cpu().float().numpy().tolist()}")
         return FourierCodeDistribution(metric, reference_location, scale)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().sample(sample_shape)
-        check_valid_location(locations)
+        check_valid_location(locations, self.batch_lengths)
         return locations, displacements
     
     def rsample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().rsample(sample_shape)
-        check_valid_location(locations)
+        check_valid_location(locations, self.batch_lengths)
         return locations, displacements
