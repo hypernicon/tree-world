@@ -43,6 +43,7 @@ class FourierMetric(torch.nn.Module):
         c2c1 = location2[..., 0] * location1[..., 0].float()
         s2s1 = location2[..., 1] * location1[..., 1].float()
         delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1 + 1e-6)
+        print(f"delta_thetas: {delta_thetas.shape} -- {delta_thetas[0,:5, :20].detach().cpu().float().numpy().tolist()}")
 
         # estimated displacements from thetas, made as small as possible solving across alphas -- but may not agree!
         # deltas has shape (..., J, d)
