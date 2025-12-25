@@ -181,6 +181,9 @@ class FourierCodeDistribution(D.Distribution):
         deltas = scale * u
         locations = self.metric.apply_displacement(deltas, self.reference_location)
 
+        print(f"locations: {locations.shape} -- {locations[0,:5, :10].detach().cpu().float().numpy().tolist()}")
+        print(f"deltas: {deltas.shape} -- {deltas[0,:5, :10].detach().cpu().float().numpy().tolist()}")
+
         check_valid_location(locations)
         return locations, deltas
     
