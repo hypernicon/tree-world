@@ -121,7 +121,7 @@ class IndexedMixture:
         comp = self._build_distribution(idx)
         if aux is not None:
             print(f"aux: {aux.shape} -- {aux}")
-            print(f"idx: {idx.shape} -- {idx}")
+            print(f"idx: -- {idx}")
             aux = gather_component(aux, idx)
             print(f"aux2: {aux.shape} -- {aux}")
             log_px = comp.log_prob(v, aux)
