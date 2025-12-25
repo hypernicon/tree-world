@@ -40,7 +40,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
         first_index = location_norms.argmin()
         position = []
         current_index = first_index.item()
-        for i in range(location.ndim - 2):
+        for i in reversed(range(location.ndim - 2)):
             position.append(current_index % location.shape[i])
             print(f"current_index: {current_index}, location.shape[i]: {location.shape[i]}, position: {position[-1]}")
             current_index = current_index // location.shape[i]
