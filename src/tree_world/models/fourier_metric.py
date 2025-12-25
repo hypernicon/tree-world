@@ -31,6 +31,13 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
             print(f"batch_lengths: {batch_lengths.shape} -- {batch_lengths.detach().cpu().numpy().tolist()}")
         else:
             print("NO BATCH LENGTHS PROVIDED")
+        first_index = location_norms.argmin()
+        position = []
+        for i in range(location.ndims - 2):
+            position.append(first_index % location.shape[i])
+            first_index = first_index // location.shape[i]
+        position.append(first_index)
+        print(f"first_index: {first_index}, position: {position}")
         raise ValueError(f"location_norms is not on the unit sphere")
 
 
