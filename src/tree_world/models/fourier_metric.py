@@ -13,7 +13,7 @@ def check_valid_location(location: torch.Tensor):
         print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
         raise ValueError(f"location is nan/inf")
     
-    location = location.view(-1, 2)
+    location = location.reshape(-1, 2)
     if not torch.allclose(location[:,0].square() + location[:,1].square(), torch.ones_like(location[:,0]), atol=1e-1):
         print(f"location is not on the unit sphere: {location[0,:5].detach().cpu().float().numpy().tolist()}")
         raise ValueError(f"location is not on the unit sphere")
