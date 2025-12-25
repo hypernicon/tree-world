@@ -22,7 +22,7 @@ def check_valid_location(location: torch.Tensor):
         raise ValueError(f"location is nan/inf")
     
     location = location.view(-1, 2)
-    if not torch.allclose(location[:,0].square() + location[:,1].square(), 1.0, atol=1e-1):
+    if not torch.allclose(location[:,0].square() + location[:,1].square(), torch.ones_like(location[:,0]), atol=1e-1):
         print(f"location is not on the unit sphere: {location[0,:5].detach().cpu().float().numpy().tolist()}")
         raise ValueError(f"location is not on the unit sphere")
 
