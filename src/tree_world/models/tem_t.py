@@ -207,8 +207,11 @@ class MetricSampler(torch.nn.Module):
             qk_distances = qk_distances.masked_fill(batch_mask, float('inf'))
 
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
-        length_protected_ones = (torch.arange(S, device=query.device)[None, :] < batch_lengths[:, None]).to(qk_distances.dtype)[:, None, :]
-        qk_distances = torch.where(invalid_mask, length_protected_ones.to(qk_distances.dtype), qk_distances)
+        if batch_lengths is not None:
+            length_protected_ones = (torch.arange(S, device=query.device)[None, :] < batch_lengths[:, None]).to(qk_distances.dtype)[:, None, :]
+            qk_distances = torch.where(invalid_mask, length_protected_ones.to(qk_distances.dtype), qk_distances)
+        else:
+            qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 
         mixture_class = IndexedLowRankGaussianMixture if not self.location else IndexedFourierMixture
         if self.location:
