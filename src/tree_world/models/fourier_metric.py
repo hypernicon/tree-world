@@ -37,6 +37,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
             print(f"batch_lengths: {batch_lengths.shape} -- {batch_lengths.detach().cpu().numpy().tolist()}")
         else:
             print("NO BATCH LENGTHS PROVIDED")
+        print(f"location shape: {location.shape}")
         first_index = location_norms.argmin()
         position = []
         current_index = first_index.item()
