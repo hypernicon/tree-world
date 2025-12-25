@@ -27,6 +27,9 @@ def gather_component(
     If x is (..., S, E) and idx is (...), returns (..., E).
     If x is (..., S) and idx is (...), returns (...).
     """
+    if idx is None:
+        return x
+        
     if x.ndim == idx.ndim:
         B, Tx, S = x.shape
         B, T, K = idx.shape
@@ -117,6 +120,7 @@ class IndexedMixture:
         v = value.unsqueeze(-2).float()
         comp = self._build_distribution(idx)
         if aux is not None:
+            aux = gather_component(aux, idx)
             log_px = comp.log_prob(v, aux)
         else:
             log_px = comp.log_prob(v)
