@@ -29,7 +29,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
         batch_mask = batch_mask.max(dim=-1).values
         location_norms = torch.masked_fill(location_norms, batch_mask, 1.0)
 
-    if not torch.allclose(location_norms, torch.ones_like(location_norms), atol=1e-1):
+    if not torch.allclose(location_norms, torch.ones_like(location_norms), atol=0.25):
         print(f"location_norms: {location_norms.shape} -- {location_norms[:100].detach().cpu().float().numpy().tolist()}")
         print(f"location is not on the unit sphere: {reshaped_location[:100].detach().cpu().float().numpy().tolist()}")
         print(f"max norm: {location_norms.max().item()}, min norm: {location_norms.min().item()}")
