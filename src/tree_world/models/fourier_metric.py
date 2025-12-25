@@ -171,9 +171,15 @@ class FourierCodeDistribution(D.Distribution):
         if displacements is None:
             _, displacements = self.metric.compute_displacements(self.reference_location, locations)
 
+        print(f"displacements: {displacements.shape} ")
+        print(f"reference_location: {self.reference_location.shape}")
+        print(f"scale: {scale.shape}")
+
         scale = self.scale[..., None]
         while scale.ndim < displacements.ndim:
             scale = scale[None, ...]
+
+        print(f"scale: {scale.shape}")
 
         displacements = displacements / scale[..., None]
 
