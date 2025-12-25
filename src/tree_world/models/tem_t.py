@@ -377,8 +377,7 @@ class TemLocalizer(torch.nn.Module):
 
         prior_location_minus_prefix, prior_location_indices = self.remove_prefix(prior_location, prefix_length, batch_lengths)
         geometric_location_minus_prefix, displacement_loss = self.geometric_action_decoder(
-            prior_location_minus_prefix, action, allow_extension=False, regularize=True, 
-            batch_lengths=None if batch_lengths is None else (batch_lengths - prefix_length)
+            prior_location_minus_prefix, action, allow_extension=False, regularize=True)
         ) # <-- we've already extended the action sequence
         geometric_location = self.restore_prefix(prior_location, geometric_location_minus_prefix, prior_location_indices)
         check_valid_location(geometric_location, batch_lengths)
