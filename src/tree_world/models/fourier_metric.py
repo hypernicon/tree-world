@@ -49,6 +49,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
             current_index = current_index // shape[i]
         position.append(current_index)
         print(f"first_index: {first_index}, position: {position[::-1]}, value {reshaped_location[first_index].detach().cpu().float().numpy().tolist()}")
+        print(f"zeros: {(location == 0.0).all(dim=-1).detach().cpu().float().numpy().tolist()}")
         raise ValueError(f"location_norms is not on the unit sphere")
 
 
