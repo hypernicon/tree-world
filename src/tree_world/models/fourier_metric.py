@@ -33,7 +33,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
             print("NO BATCH LENGTHS PROVIDED")
         first_index = location_norms.argmin()
         position = []
-        for i in range(location.ndims - 2):
+        for i in range(location.ndim - 2):
             position.append(first_index % location.shape[i])
             first_index = first_index // location.shape[i]
         position.append(first_index)
