@@ -207,6 +207,7 @@ class FourierCodeDistribution(D.Distribution):
 
 class IndexedFourierMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor):
+        check_valid_location(reference_location)
         super().__init__(logits, self.distribution_builder, metric, reference_location, scale)
     
     def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
