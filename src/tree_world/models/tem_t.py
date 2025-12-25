@@ -206,6 +206,9 @@ class MetricSampler(torch.nn.Module):
         mixture_class = IndexedLowRankGaussianMixture if not self.location else IndexedFourierMixture
         if self.location:
             v_std = value_std[:, None, :].expand(B, T, S)
+            v = value.view(-1, 2)
+            v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
+            value = v.view_as(value)
         else:
             v_std = value_std[:, None, :, :].expand(B, T, S, E)
         dist = mixture_class(
