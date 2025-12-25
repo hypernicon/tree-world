@@ -14,7 +14,7 @@ def check_valid_location(location: torch.Tensor):
         raise ValueError(f"location is nan/inf")
     
     location = location.reshape(-1, 2)
-    if not torch.allclose(torch.norm(location, dim=-1), torch.ones_like(location[:,0]), atol=1e-1):
+    if not torch.allclose(torch.norm(location, dim=-1), torch.ones_like(location[...,0]), atol=1e-1):
         print(f"location is not on the unit sphere: {location[0].detach().cpu().float().numpy().tolist()}")
         raise ValueError(f"location is not on the unit sphere")
 
