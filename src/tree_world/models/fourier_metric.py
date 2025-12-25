@@ -17,7 +17,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
     location_norms = torch.norm(reshaped_location, dim=-1)
     if batch_lengths is not None:
         batch_mask = torch.arange(location.shape[1], device=location.device)[None, :] >= batch_lengths[..., None]
-        while batch_mask.ndim < location_norms.ndim:
+        while batch_mask.ndim < location.ndim:
             batch_mask = batch_mask[None, ...]
         batch_mask = batch_mask.expand_as(location).reshape(-1, 2).max(dim=-1).values
         location_norms = torch.masked_fill(location_norms, batch_mask, 1.0)
