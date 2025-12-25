@@ -208,9 +208,11 @@ class FourierCodeDistribution(D.Distribution):
 class IndexedFourierMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor):
         check_valid_location(reference_location)
+        print(f"reference_location at mixture init: {reference_location.shape} -- {reference_location[0,:5, :10].detach().cpu().float().numpy().tolist()}")
         super().__init__(logits, self.distribution_builder, metric, reference_location, scale)
     
     def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
+        print(f"reference_location at mixture distribution builder: {reference_location.shape} -- {reference_location[0,:5, :10].detach().cpu().float().numpy().tolist()}")
         return FourierCodeDistribution(metric, reference_location, scale)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):

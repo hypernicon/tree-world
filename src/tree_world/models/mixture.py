@@ -133,7 +133,6 @@ class IndexedMixture:
 
 class IndexedGaussianMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor):
-
         super().__init__(logits, self.distribution_builder, loc, scale)
     
     def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
