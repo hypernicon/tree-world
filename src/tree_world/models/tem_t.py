@@ -322,6 +322,16 @@ class TemLocalizer(torch.nn.Module):
         """
         return original.scatter(dim=1, index=indices, src=extracted)
 
+    def sample_location(self, initial_location: torch.Tensor, location_distribution: D.Distribution):
+        with torch.no_grad():
+            location, deltas = location_distribution.sample()
+        
+        # hold initial location constant
+        location[:, :1] = initial_location
+
+        check_valid_location(location)
+        return location, deltas
+
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
                 max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
                 batch_lengths: Optional[torch.Tensor]=None):
@@ -360,6 +370,8 @@ class TemLocalizer(torch.nn.Module):
         sensory_location = prior_location
         check_nan_inf("prior_location", prior_location)
 
+        initial_location = prior_location[:, :1]
+
         prior_location_minus_prefix, prior_location_indices = self.remove_prefix(prior_location, prefix_length, batch_lengths)
         geometric_location_minus_prefix, displacement_loss = self.geometric_action_decoder(
             prior_location_minus_prefix, action, allow_extension=False, regularize=True
@@ -383,7 +395,7 @@ class TemLocalizer(torch.nn.Module):
             )
 
             with torch.no_grad():
-                sensory_location, _ = location_distribution.sample()
+                sensory_location, _ = self.sample_location(initial_location, location_distribution)
             
             check_valid_location(sensory_location)
 
@@ -394,7 +406,7 @@ class TemLocalizer(torch.nn.Module):
 
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
         with torch.no_grad():
-            next_location, displacements = location_distribution.sample()
+            next_location, displacements = self.sample_location(initial_location, location_distribution)
         
         check_valid_location(next_location)
 
