@@ -45,8 +45,8 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
         shape[-1] = shape[-1] // 2
         for i in reversed(range(len(shape))):
             position.append(current_index % shape[i])
-            print(f"current_index: {current_index}, location.shape[i]: {location.shape[i]}, position: {position[-1]}")
-            current_index = current_index // location.shape[i]
+            print(f"current_index: {current_index}, shape[i]: {shape[i]}, position: {position[-1]}")
+            current_index = current_index // shape[i]
         position.append(current_index)
         print(f"first_index: {first_index}, position: {position[::-1]}")
         raise ValueError(f"location_norms is not on the unit sphere")
