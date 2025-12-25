@@ -120,10 +120,9 @@ class IndexedMixture:
         v = value.unsqueeze(-2).float()
         comp = self._build_distribution(idx)
         if aux is not None:
-            print(f"aux: {aux.shape} -- {aux}")
-            print(f"idx: -- {idx}")
-            aux = gather_component(aux, idx)
-            print(f"aux2: {aux.shape} -- {aux}")
+            B, T = v.shape[:-2]
+            target_shape = (B, T) + aux.shape[1:]
+            aux = gather_component(aux[:, None, ...].expand(target_shape), idx)
             log_px = comp.log_prob(v, aux)
         else:
             log_px = comp.log_prob(v)
