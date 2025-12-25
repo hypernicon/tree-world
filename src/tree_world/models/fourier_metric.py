@@ -173,7 +173,7 @@ class FourierCodeDistribution(D.Distribution):
 
         print(f"displacements: {displacements.shape} ")
         print(f"reference_location: {self.reference_location.shape}")
-        print(f"scale: {scale.shape}")
+        print(f"scale: {self.scale.shape}")
 
         scale = self.scale[..., None]
         while scale.ndim < displacements.ndim:
