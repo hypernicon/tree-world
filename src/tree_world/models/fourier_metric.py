@@ -13,10 +13,13 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
         print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
         raise ValueError(f"location is nan/inf")
     
-    location = location.reshape(-1, 2)
-    location_norms = torch.norm(location, dim=-1)
+    reshaped_location = location.reshape(-1, 2)
+    location_norms = torch.norm(reshaped_location, dim=-1)
     if batch_lengths is not None:
         batch_mask = torch.arange(location.shape[1], device=location.device)[None, :] >= batch_lengths[..., None]
+        while batch_mask.ndim < location_norms.ndim:
+            batch_mask = batch_mask[None, ...]
+        batch_mask = batch_mask.expand_as(location).reshape(-1, 2).max(dim=-1).values
         location_norms = torch.masked_fill(location_norms, batch_mask, 1.0)
 
     if not torch.allclose(location_norms, torch.ones_like(location_norms), atol=1e-1):
