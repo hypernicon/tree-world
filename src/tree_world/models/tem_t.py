@@ -216,7 +216,7 @@ class MetricSampler(torch.nn.Module):
             self.v_metric,
             value[:, None, :, :].expand(-1, T, -1, -1),       #  center
             v_std,   #  scale
-            batch_lengths,
+            batch_lengths=batch_lengths,
         )
         return dist, invalid_mask.squeeze(-1)
 

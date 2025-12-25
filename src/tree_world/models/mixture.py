@@ -5,6 +5,7 @@ from typing import Callable, Optional
 
 def sample_indexed_mixture(
     logits: torch.Tensor,  # (B,T,S) or (...,S)
+    batch_lengths: Optional[torch.Tensor]=None,
 ) -> torch.Tensor:
     """
     Samples mixture component indices without constructing a Distribution.
@@ -15,6 +16,10 @@ def sample_indexed_mixture(
     # multinomial expects 2D; flatten leading dims
     flat = probs.reshape(-1, probs.shape[-1])
     idx = torch.multinomial(flat, num_samples=1).squeeze(-1)
+    if batch_lengths is not None:
+        while batch_lengths.ndim < idx.ndim:
+            batch_lengths = batch_lengths[..., None]
+        idx = torch.where(idx >= batch_lengths, idx % batch_lengths, idx)
     return idx.reshape(logits.shape[:-1])
 
 
@@ -91,12 +96,17 @@ class IndexedMixture:
         else:
             params = [gather_component(p, idx) if isinstance(p, torch.Tensor) else p for p in self.params]
             param_kwargs = {k: gather_component(v, idx) if isinstance(v, torch.Tensor) else v for k, v in self.param_kwargs.items()}
+        
+        param_kwargs = {**param_kwargs, **{"__idx": idx}}
 
         return self.distribution_builder(*params, **param_kwargs)
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
         # sample component indices
-        idx = sample_indexed_mixture(self.logits)  # (...,)
+        batch_lengths = None
+        if "batch_lengths" in self.param_kwargs:
+            batch_lengths = self.param_kwargs["batch_lengths"]
+        idx = sample_indexed_mixture(self.logits, batch_lengths)  # (...,)
         comp = self._build_distribution(idx)
         return comp.sample(sample_shape)
 
@@ -138,6 +148,6 @@ class IndexedGaussianMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor):
         super().__init__(logits, self.distribution_builder, loc, scale)
     
-    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
+    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor, __idx: Optional[torch.Tensor]=None) -> D.Distribution:
         return D.Independent(D.Normal(loc, scale), 1)
 

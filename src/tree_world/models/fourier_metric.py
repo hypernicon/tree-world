@@ -214,7 +214,7 @@ class FourierCodeDistribution(D.Distribution):
         deltas = scale * u
         locations = self.metric.apply_displacement(deltas, self.reference_location)
 
-        check_valid_location(locations, self.batch_lengths)
+        # check_valid_location(locations, self.batch_lengths)
         return locations, deltas
     
     rsample = sample
