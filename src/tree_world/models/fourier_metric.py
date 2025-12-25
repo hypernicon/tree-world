@@ -61,6 +61,9 @@ class FourierMetric(torch.nn.Module):
         J = deltas.shape[-2]
         assert J > 1, "J must be greater than 1"
 
+        print(f"deltas: {deltas.shape} -- {deltas[0,:25].detach().cpu().float().numpy().tolist()}")
+        print(f"mean_deltas: {mean_deltas.shape} -- {mean_deltas[0].detach().cpu().float().numpy().tolist()}")
+
         
         dev_deltas = deltas - mean_deltas[..., None, :]
         variances = dev_deltas.square().sum(dim=-1).mean(dim=-1) * (J / (J - 1))  # (...)
