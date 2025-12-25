@@ -284,8 +284,8 @@ class PseudoMetric(torch.nn.Module):
             vector1 = vector1 * scale1
             vector2 = vector2 * scale2
         
-        vector1 = self.metric(vector1)
-        vector2 = self.metric(vector2)
+        vector1 = self.metric(vector1.to(self.metric.weight.dtype)).to(vector1.dtype)
+        vector2 = self.metric(vector2.to(self.metric.weight.dtype)).to(vector2.dtype)
 
         affinity = self.cross_affinity(vector1, vector2, projected=True, scale=None)
         
