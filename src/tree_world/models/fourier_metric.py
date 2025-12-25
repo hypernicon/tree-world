@@ -7,7 +7,7 @@ from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .mixture import IndexedMixture
 
 
-def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None):
+def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None):
     if torch.isnan(location).any() or torch.isinf(location).any():
         print(f"location BAD: nan={torch.isnan(location).any().item()} inf={torch.isinf(location).any().item()}")
         print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
@@ -17,15 +17,14 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
     location_norms = torch.norm(reshaped_location, dim=-1)
     if batch_lengths is not None:
         batch_mask = torch.arange(location.shape[1], device=location.device)[None, :] >= batch_lengths[:, None]
-        print(f"batch_mask: {batch_mask.shape} -- {batch_mask.detach().cpu().float().numpy().tolist()}")
         if location.ndim == 4:
             # B, T, S, L -- two time dims!
             batch_mask = batch_mask[..., None].logical_or(batch_mask[..., None, :])
-            batch_mask = batch_mask[:, :, :location.shape[2]]
+            if __idx is not None:
+                batch_mask = batch_mask.gather(dim=-1, index=__idx)
 
         while batch_mask.ndim < location.ndim:
             batch_mask = batch_mask[..., None]
-        print(f"batch_mask {batch_mask.shape} -- location.shape: {location.shape}")
         batch_mask = batch_mask.expand_as(location).reshape(-1, 2)
         batch_mask = batch_mask.max(dim=-1).values
         location_norms = torch.masked_fill(location_norms, batch_mask, 1.0)
@@ -164,11 +163,12 @@ class FourierCodeDistribution(D.Distribution):
     support = D.constraints.real
     has_rsample = True
 
-    def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None, validate_args=None):
+    def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
+                 batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None, validate_args=None):
         self.metric = metric
         self.reference_location = reference_location
         self.batch_lengths = batch_lengths
-        check_valid_location(reference_location, batch_lengths)
+        check_valid_location(reference_location, batch_lengths, __idx)
 
         self.dtype = reference_location.dtype
         self.device = reference_location.device
@@ -243,8 +243,9 @@ class IndexedFourierMixture(IndexedMixture):
         self.batch_lengths = batch_lengths
         super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths)
     
-    def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
-        return FourierCodeDistribution(metric, reference_location, scale, batch_lengths)
+    def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
+                                   batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None) -> D.Distribution:
+        return FourierCodeDistribution(metric, reference_location, scale, batch_lengths, __idx)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().sample(sample_shape)

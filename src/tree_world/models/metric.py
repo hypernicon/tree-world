@@ -341,6 +341,6 @@ class IndexedLowRankGaussianMixture(IndexedMixture):
 
         super().__init__(logits, self.distribution_builder, metric, center, scale, batch_lengths)
     
-    def distribution_builder(self, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
+    def distribution_builder(self, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None) -> D.Distribution:
         return metric.build_distribution_from_center(center, scale)
 
