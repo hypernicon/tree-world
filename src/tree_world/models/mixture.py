@@ -94,7 +94,6 @@ class IndexedMixture:
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
         # sample component indices
         idx = sample_indexed_mixture(self.logits)  # (...,)
-        print(f"idx: {idx.shape} -- {idx.detach().cpu().float().numpy().tolist()}")
         comp = self._build_distribution(idx)
         return comp.sample(sample_shape)
 

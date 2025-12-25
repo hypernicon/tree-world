@@ -207,9 +207,9 @@ class MetricSampler(torch.nn.Module):
         mixture_class = IndexedLowRankGaussianMixture if not self.location else IndexedFourierMixture
         if self.location:
             v_std = value_std[:, None, :].expand(B, T, S)
-            v = value.view(-1, 2)
-            v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
-            value = v.view_as(value)
+            # v = value.view(-1, 2)
+            # v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
+            # value = v.view_as(value)
         else:
             v_std = value_std[:, None, :, :].expand(B, T, S, E)
         dist = mixture_class(
@@ -359,18 +359,17 @@ class TemLocalizer(torch.nn.Module):
         if prior_location.shape[1] < T:
             prior_location = torch.cat([
                 prior_location, 
-                torch.zeros((B, T - prior_location.shape[1], self.location_dim), 
-                dtype=prior_location.dtype, 
-                device=prior_location.device
-            )], dim=1)
+                torch.stack([
+                    torch.ones((B, T - prior_location.shape[1], self.location_dim//2), dtype=prior_location.dtype, device=prior_location.device),
+                    torch.zeros((B, T - prior_location.shape[1], self.location_dim//2), dtype=prior_location.dtype, device=prior_location.device),
+                ], dim=-1).view(B, -1, self.location_dim),
+            ], dim=1)
         
         if action.shape[1] < T - prefix_length.min():
             action = torch.cat([
                 action, 
-                torch.zeros((B, T - prefix_length.min() - action.shape[1], self.action_dim), 
-                dtype=action.dtype, 
-                device=action.device
-            )], dim=1)
+                torch.zeros((B, T - prefix_length.min() - action.shape[1], self.action_dim,), dtype=action.dtype, device=action.device),
+            ], dim=1)
 
         sensory_location = prior_location
         check_nan_inf("prior_location", prior_location)
