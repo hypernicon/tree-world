@@ -181,7 +181,7 @@ class FourierCodeDistribution(D.Distribution):
 
         print(f"scale: {scale.shape}")
 
-        displacements = displacements / scale[..., None]
+        displacements = displacements / scale
 
         gaussian_log_prob = (
             - 0.5 * displacements.square().sum(dim=-1)
