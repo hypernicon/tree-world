@@ -15,6 +15,17 @@ def check_nan_inf(name, t):
         print(f"{name} stats: min={t.nan_to_num().min().item()} max={t.nan_to_num().max().item()}")
         raise ValueError(f"{name} is nan/inf")
 
+def check_valid_location(location: torch.Tensor):
+    if torch.isnan(location).any() or torch.isinf(location).any():
+        print(f"location BAD: nan={torch.isnan(location).any().item()} inf={torch.isinf(location).any().item()}")
+        print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
+        raise ValueError(f"location is nan/inf")
+    
+    location = location.view(-1, 2)
+    if not torch.allclose(location[:,0].square() + location[:,1].square(), 1.0, atol=1e-1):
+        print(f"location is not on the unit sphere: {location[0,:5].detach().cpu().float().numpy().tolist()}")
+        raise ValueError(f"location is not on the unit sphere")
+
 
 def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
     deltas = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)  # (B, T, J, d)
@@ -188,16 +199,13 @@ class MetricSampler(torch.nn.Module):
         check_nan_inf("qk_distances", qk_distances)
 
         mask = torch.triu(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=0)
-        print(f"mask: {mask.shape} -- {mask[:25, :25].detach().cpu().float().numpy().tolist()}")
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
-        print(f"qk_distances: {qk_distances.shape} -- {qk_distances[0,:25, :25].detach().cpu().float().numpy().tolist()}")
         assert not torch.isnan(qk_distances).any()
 
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
             v_scale = E ** -0.5
             close_to_distances = (v_scale * self.v_metric.pseudo_distance(value.float(), close_to.float(), squared=True))
-            print(f"close_to_distances: {close_to_distances.shape} -- {close_to_distances[0,:25].detach().cpu().float().numpy().tolist()}")
             assert not torch.isnan(close_to_distances).any()
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
         
@@ -368,6 +376,7 @@ class TemLocalizer(torch.nn.Module):
             prior_location_minus_prefix, action, allow_extension=False, regularize=True
         ) # <-- we've already extended the action sequence
         geometric_location = self.restore_prefix(prior_location, geometric_location_minus_prefix, prior_location_indices)
+        check_valid_location(geometric_location)
         sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient 
         check_nan_inf("sensory_plus_geometric", sensory_plus_geometric)
         
@@ -386,6 +395,8 @@ class TemLocalizer(torch.nn.Module):
 
             with torch.no_grad():
                 sensory_location, _ = location_distribution.sample()
+            
+            check_valid_location(sensory_location)
 
             location_disagreement = self.location_metric.pseudo_distance(geometric_location, sensory_location)
 
@@ -395,6 +406,8 @@ class TemLocalizer(torch.nn.Module):
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
         with torch.no_grad():
             next_location, displacements = location_distribution.sample()
+        
+        check_valid_location(next_location)
 
         if B > 1:
             print(f"next_location: min: {next_location.min().item()}, mean: {next_location.mean().item()}, max: {next_location.max().item()}")

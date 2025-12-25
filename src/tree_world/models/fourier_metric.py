@@ -38,14 +38,11 @@ class FourierMetric(torch.nn.Module):
         location1 = self.reshape_to_components(location1)  # Now has shape (..., J, d+1, 2)
         location2 = self.reshape_to_components(location2)  # Now has shape (..., J, d+1, 2)
 
-        print(f"location1: {location1.shape} -- {location1[0,:5, :10].detach().cpu().float().numpy().tolist()}")
-        print(f"location2: {location2.shape} -- {location2[0,:5, :10].detach().cpu().float().numpy().tolist()}")
         s2c1 = location2[..., 1] * location1[..., 0].float()
         c2s1 = location2[..., 0] * location1[..., 1].float()
         c2c1 = location2[..., 0] * location1[..., 0].float()
         s2s1 = location2[..., 1] * location1[..., 1].float()
         delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1 + 1e-6)
-        print(f"delta_thetas: {delta_thetas.shape} -- {delta_thetas[0,:5, :10].detach().cpu().float().numpy().tolist()}")
 
         # estimated displacements from thetas, made as small as possible solving across alphas -- but may not agree!
         # deltas has shape (..., J, d)
@@ -63,10 +60,6 @@ class FourierMetric(torch.nn.Module):
         deltas, mean_deltas = self.compute_displacements(location1, location2)
         J = deltas.shape[-2]
         assert J > 1, "J must be greater than 1"
-
-        print(f"deltas: {deltas.shape} -- {deltas[0,:25].detach().cpu().float().numpy().tolist()}")
-        print(f"mean_deltas: {mean_deltas.shape} -- {mean_deltas[0].detach().cpu().float().numpy().tolist()}")
-
         
         dev_deltas = deltas - mean_deltas[..., None, :]
         variances = dev_deltas.square().sum(dim=-1).mean(dim=-1) * (J / (J - 1))  # (...)
