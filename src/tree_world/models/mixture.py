@@ -30,6 +30,9 @@ def gather_component(
     if idx is None:
         return x
 
+    if x.ndim < idx.ndim:
+        return x
+
     if x.ndim == idx.ndim:
         B, Tx, S = x.shape
         B, T, K = idx.shape
