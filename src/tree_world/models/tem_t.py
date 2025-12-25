@@ -200,6 +200,12 @@ class MetricSampler(torch.nn.Module):
         
         qk_distances = qk_distances.to(value.dtype)
 
+        if batch_lengths is not None:
+            batch_mask = torch.arange(S, device=query.device)[None, :] >= batch_lengths[:, None]
+            while batch_mask.ndim < qk_distances.ndim:
+                batch_mask = batch_mask[..., None]
+            qk_distances = qk_distances.masked_fill(batch_mask, float('inf'))
+
         invalid_mask = (qk_distances >= float('inf')).all(dim=-1, keepdim=True)  # (B, T, 1)
         qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 

@@ -97,8 +97,6 @@ class IndexedMixture:
             params = [gather_component(p, idx) if isinstance(p, torch.Tensor) else p for p in self.params]
             param_kwargs = {k: gather_component(v, idx) if isinstance(v, torch.Tensor) else v for k, v in self.param_kwargs.items()}
         
-        param_kwargs = {**param_kwargs, **{"__idx": idx}}
-
         return self.distribution_builder(*params, **param_kwargs)
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
@@ -148,6 +146,6 @@ class IndexedGaussianMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor):
         super().__init__(logits, self.distribution_builder, loc, scale)
     
-    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor, __idx: Optional[torch.Tensor]=None) -> D.Distribution:
+    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
         return D.Independent(D.Normal(loc, scale), 1)
 

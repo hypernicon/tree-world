@@ -164,7 +164,7 @@ class FourierCodeDistribution(D.Distribution):
     has_rsample = True
 
     def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
-                 batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None, validate_args=None):
+                 batch_lengths: Optional[torch.Tensor]=None, validate_args=None):
         self.metric = metric
         self.reference_location = reference_location
         self.batch_lengths = batch_lengths
@@ -245,8 +245,8 @@ class IndexedFourierMixture(IndexedMixture):
         super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths)
     
     def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
-                                   batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None) -> D.Distribution:
-        return FourierCodeDistribution(metric, reference_location, scale, batch_lengths, __idx)
+                                   batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
+        return FourierCodeDistribution(metric, reference_location, scale, batch_lengths)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().sample(sample_shape)
