@@ -28,6 +28,8 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
         print(f"location is not on the unit sphere: {location.detach().cpu().float().numpy().tolist()}")
         if batch_lengths is not None:
             print(f"batch_lengths: {batch_lengths.shape} -- {batch_lengths.detach().cpu().numpy().tolist()}")
+        else:
+            print("NO BATCH LENGTHS PROVIDED")
         raise ValueError(f"location_norms is not on the unit sphere")
 
 
