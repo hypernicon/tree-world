@@ -221,6 +221,7 @@ class MetricSampler(torch.nn.Module):
             # value = v.view_as(value)
         else:
             v_std = value_std[:, None, :, :].expand(B, T, S, E)
+
         dist = mixture_class(
             -0.5 * qk_distances,                              #  logits
             self.v_metric,
@@ -382,6 +383,7 @@ class TemLocalizer(torch.nn.Module):
 
         sensory_location = prior_location
         check_nan_inf("prior_location", prior_location)
+        check_valid_location(prior_location, batch_lengths)
 
         initial_location = prior_location[:, :1]
 
