@@ -168,7 +168,7 @@ class FourierCodeDistribution(D.Distribution):
         self.metric = metric
         self.reference_location = reference_location
         self.batch_lengths = batch_lengths
-        check_valid_location(reference_location, batch_lengths, __idx)
+        # check_valid_location(reference_location, batch_lengths, __idx)
 
         self.dtype = reference_location.dtype
         self.device = reference_location.device
