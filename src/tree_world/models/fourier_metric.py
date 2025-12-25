@@ -26,6 +26,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
     if not torch.allclose(location_norms, torch.ones_like(location_norms), atol=1e-1):
         print(f"location_norms: {location_norms.shape} -- {location_norms.detach().cpu().float().numpy().tolist()}")
         print(f"location is not on the unit sphere: {location.detach().cpu().float().numpy().tolist()}")
+        print(f"batch_lengths: {batch_lengths.shape} -- {batch_lengths.detach().cpu().numpy().tolist()}")
         raise ValueError(f"location_norms is not on the unit sphere")
 
 
