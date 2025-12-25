@@ -38,11 +38,11 @@ class FourierMetric(torch.nn.Module):
         location1 = self.reshape_to_components(location1)  # Now has shape (..., J, d+1, 2)
         location2 = self.reshape_to_components(location2)  # Now has shape (..., J, d+1, 2)
         
-        s2c1 = location2[..., 1] * location1[..., 0]
-        c2s1 = location2[..., 0] * location1[..., 1]
-        c2c1 = location2[..., 0] * location1[..., 0]
-        s2s1 = location2[..., 1] * location1[..., 1]
-        delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1 + 1e-8)
+        s2c1 = location2[..., 1] * location1[..., 0].float()
+        c2s1 = location2[..., 0] * location1[..., 1].float()
+        c2c1 = location2[..., 0] * location1[..., 0].float()
+        s2s1 = location2[..., 1] * location1[..., 1].float()
+        delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1 + 1e-6).to(location1.dtype)
 
         # estimated displacements from thetas, made as small as possible solving across alphas -- but may not agree!
         # deltas has shape (..., J, d)
