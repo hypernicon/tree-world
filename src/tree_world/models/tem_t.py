@@ -189,14 +189,14 @@ class MetricSampler(torch.nn.Module):
 
         mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
-        print(f"qk_distances: {qk_distances.shape} -- {qk_distances[0,:4, :25].detach().cpu().float().numpy().tolist()}")
+        print(f"qk_distances: {qk_distances.shape} -- {qk_distances[0,:25, :25].detach().cpu().float().numpy().tolist()}")
         assert not torch.isnan(qk_distances).any()
 
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
             v_scale = E ** -0.5
             close_to_distances = (v_scale * self.v_metric.pseudo_distance(value.float(), close_to.float(), squared=True))
-            print(f"close_to_distances: {close_to_distances.shape} -- {close_to_distances[0,:4, :25].detach().cpu().float().numpy().tolist()}")
+            print(f"close_to_distances: {close_to_distances.shape} -- {close_to_distances[0,:25].detach().cpu().float().numpy().tolist()}")
             assert not torch.isnan(close_to_distances).any()
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
         
