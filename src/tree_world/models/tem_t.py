@@ -5,7 +5,7 @@ import torch.distributions as D
 from typing import Optional, Union
 from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .metric import PseudoMetric, IndexedLowRankGaussianMixture
-from .fourier_metric import IndexedFourierMixture, FourierCodeDistribution, FourierMetric
+from .fourier_metric import IndexedFourierMixture, FourierCodeDistribution, FourierMetric, check_valid_location
 from .mixture import IndexedGaussianMixture
 
 
@@ -14,17 +14,6 @@ def check_nan_inf(name, t):
         print(f"{name} BAD: nan={torch.isnan(t).any().item()} inf={torch.isinf(t).any().item()}")
         print(f"{name} stats: min={t.nan_to_num().min().item()} max={t.nan_to_num().max().item()}")
         raise ValueError(f"{name} is nan/inf")
-
-def check_valid_location(location: torch.Tensor):
-    if torch.isnan(location).any() or torch.isinf(location).any():
-        print(f"location BAD: nan={torch.isnan(location).any().item()} inf={torch.isinf(location).any().item()}")
-        print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
-        raise ValueError(f"location is nan/inf")
-    
-    location = location.view(-1, 2)
-    if not torch.allclose(location[:,0].square() + location[:,1].square(), torch.ones_like(location[:,0]), atol=1e-1):
-        print(f"location is not on the unit sphere: {location[0,:5].detach().cpu().float().numpy().tolist()}")
-        raise ValueError(f"location is not on the unit sphere")
 
 
 def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
