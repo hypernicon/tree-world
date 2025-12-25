@@ -20,7 +20,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
         print(f"batch_mask: {batch_mask.shape} -- {batch_mask.detach().cpu().float().numpy().tolist()}")
         if location.ndim == 4:
             # B, T, S, L -- two time dims!
-            batch_mask = batch_mask[..., None] or batch_mask[..., None, :]
+            batch_mask = batch_mask[..., None].logical_or(batch_mask[..., None, :])
 
         while batch_mask.ndim < location.ndim:
             batch_mask = batch_mask[..., None]
