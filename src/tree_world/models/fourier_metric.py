@@ -136,6 +136,7 @@ class FourierCodeDistribution(D.Distribution):
     def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, validate_args=None):
         self.metric = metric
         self.reference_location = reference_location
+        check_valid_location(reference_location)
 
         self.dtype = reference_location.dtype
         self.device = reference_location.device
@@ -180,10 +181,6 @@ class FourierCodeDistribution(D.Distribution):
             scale = scale[None, ...]
         deltas = scale * u
         locations = self.metric.apply_displacement(deltas, self.reference_location)
-
-        print(f"reference_location: {self.reference_location.shape} -- {self.reference_location[0,:5, :10].detach().cpu().float().numpy().tolist()}")
-        print(f"locations: {locations.shape} -- {locations[0,:5, :10].detach().cpu().float().numpy().tolist()}")
-        print(f"deltas: {deltas.shape} -- {deltas[0,:5, :10].detach().cpu().float().numpy().tolist()}")
 
         check_valid_location(locations)
         return locations, deltas
