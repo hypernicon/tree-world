@@ -32,7 +32,7 @@ def gather_component(
         B, T, K = idx.shape
         if Tx != T:
             x = x.expand(B, T, S)
-        out = x.gather(dim=-1, index=gather_idx).squeeze(-1)
+        out = x.gather(dim=-1, index=idx).squeeze(-1)
         return out
     elif x.ndim == idx.ndim + 1:
         if x.ndim == 3:
