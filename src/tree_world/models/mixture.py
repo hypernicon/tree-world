@@ -27,7 +27,14 @@ def gather_component(
     If x is (..., S, E) and idx is (...), returns (..., E).
     If x is (..., S) and idx is (...), returns (...).
     """
-    if x.ndim == idx.ndim + 1:
+    if x.ndim == idx.ndim:
+        B, Tx, S = x.shape
+        B, T, K = idx.shape
+        if Tx != T:
+            x = x.expand(B, T, S)
+        out = x.gather(dim=-1, index=gather_idx).squeeze(-1)
+        return out
+    elif x.ndim == idx.ndim + 1:
         if x.ndim == 3:
             B, Tx, S = x.shape
             B, T = idx.shape

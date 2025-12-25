@@ -162,8 +162,6 @@ class FourierCodeDistribution(D.Distribution):
         while scale.ndim < u.ndim:
             scale = scale[None, ...]
         deltas = scale * u
-        print(f"deltas: {deltas.shape} -- {deltas}")
-        print(f"reference_location: {self.reference_location.shape} -- {self.reference_location}")
         locations = self.metric.apply_displacement(deltas, self.reference_location)
         return locations, deltas
     
