@@ -99,6 +99,8 @@ class IndexedMixture:
         
         from .fourier_metric import check_valid_location, FourierMetric
         if isinstance(params[0], FourierMetric):
+            print("CHECKING VALID LOCATION")
+            print(f"ref loc shape: {params[1].shape}")
             check_valid_location(params[1], param_kwargs["batch_lengths"])
             if params[1].shape[1] > 1:
                 for i, p in enumerate(params):
