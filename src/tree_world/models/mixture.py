@@ -5,7 +5,7 @@ from typing import Callable, Optional
 
 def sample_indexed_mixture(
     logits: torch.Tensor,  # (B,T,S) or (...,S)
-    batch_lengths: Optional[torch.Tensor]=None,
+    batch_lengths: Optional[torch.Tensor]=None,  # (B,) if present
 ) -> torch.Tensor:
     """
     Samples mixture component indices without constructing a Distribution.
@@ -19,6 +19,7 @@ def sample_indexed_mixture(
     if batch_lengths is not None:
         while batch_lengths.ndim < idx.ndim:
             batch_lengths = batch_lengths[..., None]
+        print(f"batch_lengths: {batch_lengths.shape} -- idx: {idx.shape}")
         idx = torch.where(idx >= batch_lengths, idx % batch_lengths, idx)
     return idx.reshape(logits.shape[:-1])
 
@@ -99,16 +100,8 @@ class IndexedMixture:
         
         from .fourier_metric import check_valid_location, FourierMetric
         if isinstance(params[0], FourierMetric):
-            print("CHECKING VALID LOCATION")
-            print(f"ref loc shape: {params[1].shape}")
             check_valid_location(params[1], param_kwargs["batch_lengths"], idx if pass_idx else None)
-            if params[1].shape[1] > 1:
-                for i, p in enumerate(params):
-                    if isinstance(p, torch.Tensor):
-                        print(f"p[{i}] shape (after): {p.shape}")
-                        print(f"p[{i}] (after): {p[..., :2].detach().cpu().float().numpy().tolist()}")
 
-        print("DISTRIBUTION BUILDER")
         return self.distribution_builder(*params, **param_kwargs, idx=idx if pass_idx else None)
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
@@ -120,9 +113,6 @@ class IndexedMixture:
         from .fourier_metric import check_valid_location, FourierMetric
         if isinstance(self.params[0], FourierMetric):
             check_valid_location(self.params[1], batch_lengths)
-            if self.params[1].shape[1] > 1:
-                print(f"ref loc shape: {self.params[1].shape}")
-                print(f"ref loc: {self.params[1][..., :2].detach().cpu().float().numpy().tolist()}")
         idx = sample_indexed_mixture(self.logits, batch_lengths)  # (...,)
         comp = self._build_distribution(idx)
         return comp.sample(sample_shape)
