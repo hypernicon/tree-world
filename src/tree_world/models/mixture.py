@@ -18,7 +18,6 @@ def sample_indexed_mixture(
     if batch_lengths is not None:
         while batch_lengths.ndim < idx.ndim:
             batch_lengths = batch_lengths[..., None]
-        print(f"batch_lengths: {batch_lengths.shape} -- idx: {idx.shape}")
         idx = torch.where(idx >= batch_lengths, idx % batch_lengths, idx)
     return idx
 
