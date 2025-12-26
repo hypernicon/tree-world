@@ -100,6 +100,9 @@ class IndexedMixture:
         from .fourier_metric import check_valid_location, FourierMetric
         if isinstance(params[0], FourierMetric):
             check_valid_location(params[1], param_kwargs["batch_lengths"])
+            if params[1].shape[1] > 1:
+                print(f"ref loc shape (after): {params[1].shape}")
+                print(f"ref loc (after): {params[1][..., :2].detach().cpu().float().numpy().tolist()}")
 
         return self.distribution_builder(*params, **param_kwargs)
 
@@ -112,6 +115,9 @@ class IndexedMixture:
         from .fourier_metric import check_valid_location, FourierMetric
         if isinstance(self.params[0], FourierMetric):
             check_valid_location(self.params[1], batch_lengths)
+            if self.params[1].shape[1] > 1:
+                print(f"ref loc shape: {self.params[1].shape}")
+                print(f"ref loc: {self.params[1][..., :2].detach().cpu().float().numpy().tolist()}")
         idx = sample_indexed_mixture(self.logits, batch_lengths)  # (...,)
         comp = self._build_distribution(idx)
         return comp.sample(sample_shape)
