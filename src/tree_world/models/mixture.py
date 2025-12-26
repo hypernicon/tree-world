@@ -109,7 +109,7 @@ class IndexedMixture:
                         print(f"p[{i}] (after): {p[..., :2].detach().cpu().float().numpy().tolist()}")
 
         print("DISTRIBUTION BUILDER")
-        return self.distribution_builder(*params, **param_kwargs, __idx=idx if pass_idx else None)
+        return self.distribution_builder(*params, **param_kwargs, idx=idx if pass_idx else None)
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
         # sample component indices
@@ -167,6 +167,6 @@ class IndexedGaussianMixture(IndexedMixture):
         super().__init__(logits, self.distribution_builder, loc, scale, batch_lengths=batch_lengths)
     
     def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None,
-                             __idx: Optional[torch.Tensor]=None) -> D.Distribution:
+                             idx: Optional[torch.Tensor]=None) -> D.Distribution:
         return D.Independent(D.Normal(loc, scale), 1)
 
