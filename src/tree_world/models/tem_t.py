@@ -300,25 +300,14 @@ class TemLocalizer(torch.nn.Module):
         self.dropout = dropout
         self.fourier = fourier
 
-        if fourier:
-            self.location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
+        self.gemoetric_location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
+        if self.fourier:
+            self.location_metric = self.gemoetric_location_metric
         else:
             self.location_metric = PseudoMetric(location_dim, metric_rank=embed_dim)
-        self.sensory_metric = PseudoMetric(sensory_dim, metric_rank=embed_dim)
-        self.sensory_metric_with_location = PseudoMetric(sensory_dim, metric_rank=embed_dim)
-
-        self.location_scale = torch.nn.Parameter(torch.ones(1, 1) * 5.0)
-        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
-
-        self.location_refiner = MetricSampler(
-            self.sensory_metric_with_location, self.location_metric, self.sensory_dim, location=fourier
-        )
-        self.sensory_predictor = MetricSampler(
-            self.location_metric, self.sensory_metric, self.location_dim, location=False
-        )
 
         self.geometric_action_decoder = GeometricActionDecoder(
-            self.location_metric, location_dim, action_dim, action_hidden_dim, dropout
+            self.geometric_location_metric, location_dim, action_dim, action_hidden_dim, dropout
         )
 
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
