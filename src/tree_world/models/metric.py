@@ -231,11 +231,17 @@ class PseudoMetric(torch.nn.Module):
                     
             location1 = location1 * scale
             location2 = location2 * scale
+        
+        original_dtype = self.metric.weight.dtype
+        dtype = location1.dtype
+        self.metric.to(dtype)
 
         if prepared_k:
             diff = self.metric(location1) - location2
         else:
             diff = self.metric(location1 - location2)
+
+        self.metric.to(original_dtype)
 
         if squared:
             return diff.pow(2).sum(dim=-1)
