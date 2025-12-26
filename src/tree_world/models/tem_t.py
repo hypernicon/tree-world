@@ -290,7 +290,7 @@ class GeometricActionDecoder(torch.nn.Module):
 class TemLocalizer(torch.nn.Module):
     def __init__(self, location_dim: int, sensory_dim: int, action_dim: int, embed_dim: int, num_heads: int=4, 
                        action_hidden_dim: int=128, dropout: float=0.1, compute_window=1024, physical_dim: int=2, 
-                       physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0)):
+                       physical_scale: float=10.0, physical_ratio: float=math.sqrt(2.0), fourier: bool=True):
         super().__init__()
         self.location_dim = location_dim
         self.sensory_dim = sensory_dim
@@ -298,8 +298,12 @@ class TemLocalizer(torch.nn.Module):
         self.embed_dim = embed_dim
         self.num_heads = num_heads
         self.dropout = dropout
+        self.fourier = fourier
 
-        self.location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
+        if fourier:
+            self.location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
+        else:
+            self.location_metric = PseudoMetric(location_dim, metric_rank=embed_dim)
         self.sensory_metric = PseudoMetric(sensory_dim, metric_rank=embed_dim)
         self.sensory_metric_with_location = PseudoMetric(sensory_dim, metric_rank=embed_dim)
 
@@ -307,7 +311,7 @@ class TemLocalizer(torch.nn.Module):
         self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
 
         self.location_refiner = MetricSampler(
-            self.sensory_metric_with_location, self.location_metric, self.sensory_dim, location=True
+            self.sensory_metric_with_location, self.location_metric, self.sensory_dim, location=fourier
         )
         self.sensory_predictor = MetricSampler(
             self.location_metric, self.sensory_metric, self.location_dim, location=False
@@ -338,7 +342,7 @@ class TemLocalizer(torch.nn.Module):
         """
         return original.scatter(dim=1, index=indices, src=extracted)
 
-    def sample_location(self, initial_location: torch.Tensor, location_distribution: D.Distribution, batch_lengths: Optional[torch.Tensor]=None):
+    def sample_fourier_location(self, initial_location: torch.Tensor, location_distribution: D.Distribution, batch_lengths: Optional[torch.Tensor]=None):
         with torch.no_grad():
             location, deltas = location_distribution.sample()
         
@@ -347,6 +351,12 @@ class TemLocalizer(torch.nn.Module):
 
         location = check_valid_location(location, batch_lengths)
         return location, deltas
+    
+    def sample_location(self, initial_location: torch.Tensor, location_distribution: D.Distribution, batch_lengths: Optional[torch.Tensor]=None):
+        if self.fourier:
+            return self.sample_fourier_location(initial_location, location_distribution, batch_lengths)
+        else:
+            return location_distribution.sample(), None
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
                 max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
@@ -430,6 +440,12 @@ class TemLocalizer(torch.nn.Module):
         geometric_logprobs = self.geometric_action_decoder.logprobs(
             next_location_minus_prefix, geometric_location_minus_prefix
         )
+
+        if self.fourier:
+            sensory_location_logprobs = location_distribution.log_prob(next_location, top_k=32)
+        else:
+            sensory_location_logprobs = location_distribution.log_prob(next_location, displacements, top_k=32)
+
         sensory_location_logprobs = location_distribution.log_prob(next_location, displacements, top_k=32)
         sensory_location_logprobs_minus_prefix, _ = self.remove_prefix(
             sensory_location_logprobs, prefix_length, batch_lengths
@@ -498,4 +514,5 @@ class TemLocalizer(torch.nn.Module):
             dropout=config.dropout,
             physical_dim=config.dim,
             physical_scale=config.grid_extent,
+            fourier=config.location_metric == "fourier"
         )

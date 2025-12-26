@@ -36,8 +36,8 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
             has_errors = (location_norms > 1 + atol).logical_or(location_norms < 1 - atol)
             has_errors = has_errors.logical_and(~has_zeros)
 
-            zeros_fixed = has_zeros.float().sum()
-            errors_fixed = has_errors.float().sum()
+            # zeros_fixed = has_zeros.float().sum()
+            # errors_fixed = has_errors.float().sum()
 
             if has_errors.any():
                 fixed = (1-reshaped_location[..., 0].square()).clamp(min=0.0).sqrt()
@@ -48,8 +48,8 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
             
             location = reshaped_location.view_as(location)
 
-            if zeros_fixed > 0 or errors_fixed > 0:
-                print(f"checked valid location: repaired {zeros_fixed} zeros and {errors_fixed} errors out of {location_norms.numel()} locations")
+            # if zeros_fixed > 0 or errors_fixed > 0:
+            #     print(f"checked valid location: repaired {zeros_fixed} zeros and {errors_fixed} errors out of {location_norms.numel()} locations")
 
             return location
 

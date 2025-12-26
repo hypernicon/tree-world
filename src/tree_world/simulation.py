@@ -47,6 +47,7 @@ class TreeWorldConfig:
     simple_tem: bool = True
     max_memory_size: int = 1024
     dropout: float = 0.1
+    location_metric: str = "pseudometric"
 
     # Sensory inputs
     sensory_embedding_dim: int = 1024
