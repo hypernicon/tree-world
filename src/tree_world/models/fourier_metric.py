@@ -40,7 +40,8 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
             errors_fixed = has_errors.float().sum()
 
             if has_errors.any():
-                reshaped_location[..., 1] = reshaped_location[..., 1].where(has_errors, (1-reshaped_location[..., 0].square()).sqrt())
+                fixed = (1-reshaped_location[..., 0].square()).clamp(min=0.0).sqrt()
+                reshaped_location[..., 1] = reshaped_location[..., 1].where(has_errors, fixed)
             
             if has_zeros.any():
                 reshaped_location[..., 1] = reshaped_location[..., 1].masked_fill(has_zeros, 1.0)
