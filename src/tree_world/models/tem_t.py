@@ -219,6 +219,7 @@ class MetricSampler(torch.nn.Module):
             # v = value.view(-1, 2)
             # v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
             # value = v.view_as(value)
+            check_valid_location(value, batch_lengths)
         else:
             v_std = value_std[:, None, :, :].expand(B, T, S, E)
 
@@ -348,7 +349,7 @@ class TemLocalizer(torch.nn.Module):
         return location, deltas
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
-                max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
+                max_steps: int=1, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
                 batch_lengths: Optional[torch.Tensor]=None):
         B, T, S = sensory.shape
         assert max_steps > 0
