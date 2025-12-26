@@ -311,16 +311,17 @@ class TemLocalizer(torch.nn.Module):
         )
 
         self.sensory_metric = PseudoMetric(sensory_dim, metric_rank=embed_dim)
-
-        self.location_refiner = MetricSampler(
-            self.sensory_metric, self.location_metric, self.sensory_dim, location=self.fourier
-        )
-        self.sensory_predictor = MetricSampler(
-            self.location_metric, self.sensory_metric, self.location_dim
-        )
+        self.sensory_metric_with_location = PseudoMetric(sensory_dim, metric_rank=embed_dim)
 
         self.location_scale = torch.nn.Parameter(torch.ones(1, 1) * 5.0)
         self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
+
+        self.location_refiner = MetricSampler(
+            self.sensory_metric_with_location, self.location_metric, self.sensory_dim, location=True
+        )
+        self.sensory_predictor = MetricSampler(
+            self.location_metric, self.sensory_metric, self.location_dim, location=False
+        )
 
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
