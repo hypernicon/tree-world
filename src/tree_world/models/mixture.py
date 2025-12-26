@@ -101,8 +101,10 @@ class IndexedMixture:
         if isinstance(params[0], FourierMetric):
             check_valid_location(params[1], param_kwargs["batch_lengths"])
             if params[1].shape[1] > 1:
-                print(f"ref loc shape (after): {params[1].shape}")
-                print(f"ref loc (after): {params[1][..., :2].detach().cpu().float().numpy().tolist()}")
+                for i, p in enumerate(params):
+                    if isinstance(p, torch.Tensor):
+                        print(f"p[{i}] shape (after): {p.shape}")
+                        print(f"p[{i}] (after): {p[..., :2].detach().cpu().float().numpy().tolist()}")
 
         print("DISTRIBUTION BUILDER")
         return self.distribution_builder(*params, **param_kwargs)
