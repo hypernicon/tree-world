@@ -318,7 +318,7 @@ class TemLocalizer(torch.nn.Module):
         else:
             self.location_scale = torch.nn.Parameter(torch.ones(1, 1, 1) * 5.0)
 
-        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
+        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.01)
 
         self.location_refiner = MetricSampler(
             self.sensory_metric_with_location, self.location_metric, self.sensory_dim, location=self.fourier
