@@ -319,6 +319,9 @@ class TemLocalizer(torch.nn.Module):
             self.location_metric, self.sensory_metric, self.location_dim
         )
 
+        self.location_scale = torch.nn.Parameter(torch.ones(1, 1) * 5.0)
+        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
+
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
     def remove_prefix(self, tensor: torch.Tensor, prefix_length: torch.Tensor, batch_lengths: torch.Tensor):
