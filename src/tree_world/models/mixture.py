@@ -151,9 +151,9 @@ class IndexedMixture:
 
 
 class IndexedGaussianMixture(IndexedMixture):
-    def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor):
-        super().__init__(logits, self.distribution_builder, loc, scale)
+    def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None):
+        super().__init__(logits, self.distribution_builder, loc, scale, batch_lengths=batch_lengths)
     
-    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor) -> D.Distribution:
+    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
         return D.Independent(D.Normal(loc, scale), 1)
 

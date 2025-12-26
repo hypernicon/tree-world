@@ -246,7 +246,7 @@ class IndexedFourierMixture(IndexedMixture):
                  batch_lengths: Optional[torch.Tensor]=None):
         check_valid_location(reference_location, batch_lengths)
         self.batch_lengths = batch_lengths
-        super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths)
+        super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths=batch_lengths)
     
     def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
                                    batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
