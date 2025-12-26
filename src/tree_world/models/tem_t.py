@@ -310,6 +310,15 @@ class TemLocalizer(torch.nn.Module):
             self.geometric_location_metric, location_dim, action_dim, action_hidden_dim, dropout
         )
 
+        self.sensory_metric = PseudoMetric(sensory_dim, metric_rank=embed_dim)
+
+        self.location_refiner = MetricSampler(
+            self.sensory_metric, self.location_metric, self.sensory_dim, location=self.fourier
+        )
+        self.sensory_predictor = MetricSampler(
+            self.location_metric, self.sensory_metric, self.location_dim
+        )
+
         self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
 
     def remove_prefix(self, tensor: torch.Tensor, prefix_length: torch.Tensor, batch_lengths: torch.Tensor):
