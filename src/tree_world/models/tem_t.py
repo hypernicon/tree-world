@@ -194,7 +194,7 @@ class MetricSampler(torch.nn.Module):
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
             v_scale = E ** -0.5
-            close_to_distances = (v_scale * self.v_metric.pseudo_distance(value.float(), close_to.float(), squared=True))
+            close_to_distances = (v_scale.float() * self.v_metric.pseudo_distance(value.float(), close_to.float(), squared=True))
             assert not torch.isnan(close_to_distances).any()
             qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
         
