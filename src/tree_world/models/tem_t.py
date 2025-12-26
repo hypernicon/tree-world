@@ -345,11 +345,11 @@ class TemLocalizer(torch.nn.Module):
         # hold initial location constant
         location[:, :1] = initial_location
 
-        check_valid_location(location, batch_lengths)
+        location = check_valid_location(location, batch_lengths)
         return location, deltas
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
-                max_steps: int=1, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
+                max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
                 batch_lengths: Optional[torch.Tensor]=None):
         B, T, S = sensory.shape
         assert max_steps > 0

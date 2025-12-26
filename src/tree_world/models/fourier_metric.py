@@ -7,7 +7,7 @@ from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
 from .mixture import IndexedMixture
 
 
-def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None, idx: Optional[torch.Tensor]=None):
+def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None, idx: Optional[torch.Tensor]=None, repair: bool=True):
     if torch.isnan(location).any() or torch.isinf(location).any():
         print(f"location BAD: nan={torch.isnan(location).any().item()} inf={torch.isinf(location).any().item()}")
         print(f"location stats: min={location.nan_to_num().min().item()} max={location.nan_to_num().max().item()}")
@@ -29,28 +29,51 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
         batch_mask = batch_mask.max(dim=-1).values
         location_norms = torch.masked_fill(location_norms, batch_mask, 1.0)
 
-    if not torch.allclose(location_norms, torch.ones_like(location_norms), atol=0.25):
-        print(f"location_norms: {location_norms.shape} -- {location_norms[:100].detach().cpu().float().numpy().tolist()}")
-        print(f"location is not on the unit sphere: {reshaped_location[:100].detach().cpu().float().numpy().tolist()}")
-        print(f"max norm: {location_norms.max().item()}, min norm: {location_norms.min().item()}")
-        if batch_lengths is not None:
-            print(f"batch_lengths: {batch_lengths.shape} -- {batch_lengths.detach().cpu().numpy().tolist()}")
+    atol = 0.25
+    if not torch.allclose(location_norms, torch.ones_like(location_norms), atol=atol):
+        if repair:
+            has_zeros = location_norms == 0
+            has_errors = (location_norms > 1 + atol).logical_or(location_norms < 1 - atol)
+            has_errors = has_errors.logical_and(~has_zeros)
+
+            zeros_fixed = has_zeros.float().sum()
+            errors_fixed = has_errors.float().sum()
+
+            if has_errors.any():
+                reshaped_location[..., 1] = reshaped_location[..., 1].where(has_errors, (1-reshaped_location[..., 0].square()).sqrt())
+            
+            if has_zeros.any():
+                reshaped_location[..., 1] = reshaped_location[..., 1].masked_fill(has_zeros, 1.0)
+            
+            location = reshaped_location.view_as(location)
+
+            if zeros_fixed > 0 or errors_fixed > 0:
+                print(f"checked valid location: repaired {zeros_fixed} zeros and {errors_fixed} errors out of {location_norms.numel()} locations")
+
+            return location
+
         else:
-            print("NO BATCH LENGTHS PROVIDED")
-        print(f"location shape: {location.shape}")
-        first_index = location_norms.argmin()
-        position = []
-        current_index = first_index.item()
-        shape = list(location.shape)
-        shape[-1] = shape[-1] // 2
-        for i in reversed(range(len(shape))):
-            position.append(current_index % shape[i])
-            print(f"current_index: {current_index}, shape[i]: {shape[i]}, position: {position[-1]}")
-            current_index = current_index // shape[i]
-        position.append(current_index)
-        print(f"first_index: {first_index}, position: {position[::-1]}, value {reshaped_location[first_index].detach().cpu().float().numpy().tolist()}")
-        print(f"zeros: {(location == 0.0).all(dim=-1).detach().cpu().float().numpy().tolist()}")
-        raise ValueError(f"location_norms is not on the unit sphere")
+            print(f"location_norms: {location_norms.shape} -- {location_norms[:100].detach().cpu().float().numpy().tolist()}")
+            print(f"location is not on the unit sphere: {reshaped_location[:100].detach().cpu().float().numpy().tolist()}")
+            print(f"max norm: {location_norms.max().item()}, min norm: {location_norms.min().item()}")
+            if batch_lengths is not None:
+                print(f"batch_lengths: {batch_lengths.shape} -- {batch_lengths.detach().cpu().numpy().tolist()}")
+            else:
+                print("NO BATCH LENGTHS PROVIDED")
+            print(f"location shape: {location.shape}")
+            first_index = location_norms.argmin()
+            position = []
+            current_index = first_index.item()
+            shape = list(location.shape)
+            shape[-1] = shape[-1] // 2
+            for i in reversed(range(len(shape))):
+                position.append(current_index % shape[i])
+                print(f"current_index: {current_index}, shape[i]: {shape[i]}, position: {position[-1]}")
+                current_index = current_index // shape[i]
+            position.append(current_index)
+            print(f"first_index: {first_index}, position: {position[::-1]}, value {reshaped_location[first_index].detach().cpu().float().numpy().tolist()}")
+            print(f"zeros: {(location == 0.0).all(dim=-1).detach().cpu().float().numpy().tolist()}")
+            raise ValueError(f"location_norms is not on the unit sphere")
 
 
 class FourierMetric(torch.nn.Module):
@@ -209,16 +232,16 @@ class FourierCodeDistribution(D.Distribution):
         super().__init__(batch_shape=batch_shape, event_shape=(self.metric.location_dim,), validate_args=validate_args)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
-        check_valid_location(self.reference_location, self.batch_lengths, self.idx)
+        reference_location = check_valid_location(self.reference_location, self.batch_lengths, self.idx)
         # sample Delta x ~ N(0, I_M)
         u = torch.randn(sample_shape + self.batch_shape + (self.metric.dim,), device=self.device, dtype=self.dtype)
         scale = self.scale[..., None]
         while scale.ndim < u.ndim:
             scale = scale[None, ...]
         deltas = scale * u
-        locations = self.metric.apply_displacement(deltas, self.reference_location)
+        locations = self.metric.apply_displacement(deltas, reference_location)
 
-        check_valid_location(locations, self.batch_lengths, self.idx)
+        locations = check_valid_location(locations, self.batch_lengths, self.idx)
         return locations, deltas
     
     rsample = sample
@@ -244,7 +267,7 @@ class FourierCodeDistribution(D.Distribution):
 class IndexedFourierMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
                  batch_lengths: Optional[torch.Tensor]=None):
-        check_valid_location(reference_location, batch_lengths)
+        reference_location = check_valid_location(reference_location, batch_lengths)
         self.batch_lengths = batch_lengths
         super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths=batch_lengths)
     
@@ -254,10 +277,10 @@ class IndexedFourierMixture(IndexedMixture):
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().sample(sample_shape)
-        check_valid_location(locations, self.batch_lengths)
+        locations = check_valid_location(locations, self.batch_lengths)
         return locations, displacements
     
     def rsample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().rsample(sample_shape)
-        check_valid_location(locations, self.batch_lengths)
+        locations = check_valid_location(locations, self.batch_lengths)
         return locations, displacements
