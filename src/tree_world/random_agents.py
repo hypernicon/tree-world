@@ -22,7 +22,7 @@ class RandomTemTAgent(AgentModel):
         tem_model: TemLocalizer=None,
         step_size: float=5.0,
         lmbda: float=1.0,
-        beta: float=1.0,
+        beta: float=0.1,
         dim: int=2,
         context_window: int=256,
         buffer: int=64

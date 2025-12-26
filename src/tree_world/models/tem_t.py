@@ -456,7 +456,7 @@ class TemLocalizer(torch.nn.Module):
         if B > 1:
             print(f"sensory_predicted: min: {sensory_predicted.min().item()}, mean: {sensory_predicted.mean().item()}, max: {sensory_predicted.max().item()}")
 
-        sensory_logprobs = sensory_distribution.log_prob(sensory_predicted, top_k=32)
+        sensory_logprobs = sensory_distribution.log_prob(sensory, top_k=32)
         mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
         mask = mask | (torch.arange(T, device=sensory.device)[None, :] >= batch_lengths[:, None])
         sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
