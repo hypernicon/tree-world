@@ -300,7 +300,7 @@ class TemLocalizer(torch.nn.Module):
         self.dropout = dropout
         self.fourier = fourier
 
-        self.gemoetric_location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
+        self.geometric_location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
         if self.fourier:
             self.location_metric = self.gemoetric_location_metric
         else:
