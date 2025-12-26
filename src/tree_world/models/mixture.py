@@ -14,14 +14,13 @@ def sample_indexed_mixture(
     # Always do categorical sampling in fp32 for stability in bf16
     probs = torch.nn.functional.softmax(logits.float(), dim=-1)
     # multinomial expects 2D; flatten leading dims
-    flat = probs.reshape(-1, probs.shape[-1])
-    idx = torch.multinomial(flat, num_samples=1).squeeze(-1)
+    idx = torch.multinomial(probs, num_samples=1).squeeze(-1)
     if batch_lengths is not None:
         while batch_lengths.ndim < idx.ndim:
             batch_lengths = batch_lengths[..., None]
         print(f"batch_lengths: {batch_lengths.shape} -- idx: {idx.shape}")
         idx = torch.where(idx >= batch_lengths, idx % batch_lengths, idx)
-    return idx.reshape(logits.shape[:-1])
+    return idx
 
 
 def gather_component(
