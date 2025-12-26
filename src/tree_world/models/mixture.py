@@ -104,6 +104,7 @@ class IndexedMixture:
                 print(f"ref loc shape (after): {params[1].shape}")
                 print(f"ref loc (after): {params[1][..., :2].detach().cpu().float().numpy().tolist()}")
 
+        print("DISTRIBUTION BUILDER")
         return self.distribution_builder(*params, **param_kwargs)
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
