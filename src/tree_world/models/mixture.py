@@ -97,6 +97,10 @@ class IndexedMixture:
             params = [gather_component(p, idx) if isinstance(p, torch.Tensor) else p for p in self.params]
             param_kwargs = {k: gather_component(v, idx) if isinstance(v, torch.Tensor) else v for k, v in self.param_kwargs.items()}
         
+        from .fourier_metric import check_valid_location, FourierMetric
+        if isinstance(params[0], FourierMetric):
+            check_valid_location(params[1], param_kwargs["batch_lengths"])
+
         return self.distribution_builder(*params, **param_kwargs)
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
@@ -104,6 +108,10 @@ class IndexedMixture:
         batch_lengths = None
         if "batch_lengths" in self.param_kwargs:
             batch_lengths = self.param_kwargs["batch_lengths"]
+        
+        from .fourier_metric import check_valid_location, FourierMetric
+        if isinstance(self.params[0], FourierMetric):
+            check_valid_location(self.params[1], batch_lengths)
         idx = sample_indexed_mixture(self.logits, batch_lengths)  # (...,)
         comp = self._build_distribution(idx)
         return comp.sample(sample_shape)
