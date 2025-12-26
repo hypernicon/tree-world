@@ -14,7 +14,9 @@ def sample_indexed_mixture(
     # Always do categorical sampling in fp32 for stability in bf16
     probs = torch.nn.functional.softmax(logits.float(), dim=-1)
     # multinomial expects 2D; flatten leading dims
-    idx = torch.multinomial(probs, num_samples=1).squeeze(-1)
+    flat = probs.reshape(-1, probs.shape[-1])
+    idx = torch.multinomial(flat, num_samples=1).squeeze(-1)
+    idx = idx.reshape(logits.shape[:-1])
     if batch_lengths is not None:
         while batch_lengths.ndim < idx.ndim:
             batch_lengths = batch_lengths[..., None]
