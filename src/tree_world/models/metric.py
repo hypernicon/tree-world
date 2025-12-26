@@ -1,7 +1,7 @@
 import torch
 import torch.distributions as D
 import math
-from typing import Optional, Union
+from typing import Optional, Union, Tuple
 
 from .mixture import IndexedMixture
 
@@ -334,6 +334,11 @@ class PseudoMetric(torch.nn.Module):
         )
         
         return base
+    
+    def sample(self, shape: Tuple[int, ...] = torch.Size(), device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
+        u = torch.randn(shape + (self.metric_rank,), device=device, dtype=dtype)
+        self.make_pseudoinverse()
+        return u @ self.A
 
 
 class IndexedLowRankGaussianMixture(IndexedMixture):
