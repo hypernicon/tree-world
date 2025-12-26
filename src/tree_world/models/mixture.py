@@ -89,7 +89,7 @@ class IndexedMixture:
         self.params = params
         self.param_kwargs = param_kwargs
     
-    def _build_distribution(self, idx: Optional[torch.Tensor]=None) -> D.Distribution:
+    def _build_distribution(self, idx: Optional[torch.Tensor]=None, pass_idx: bool=False) -> D.Distribution:
         if idx is None:
             params = self.params
             param_kwargs = self.param_kwargs
@@ -101,7 +101,7 @@ class IndexedMixture:
         if isinstance(params[0], FourierMetric):
             print("CHECKING VALID LOCATION")
             print(f"ref loc shape: {params[1].shape}")
-            check_valid_location(params[1], param_kwargs["batch_lengths"])
+            check_valid_location(params[1], param_kwargs["batch_lengths"], idx if pass_idx else None)
             if params[1].shape[1] > 1:
                 for i, p in enumerate(params):
                     if isinstance(p, torch.Tensor):
@@ -109,7 +109,7 @@ class IndexedMixture:
                         print(f"p[{i}] (after): {p[..., :2].detach().cpu().float().numpy().tolist()}")
 
         print("DISTRIBUTION BUILDER")
-        return self.distribution_builder(*params, **param_kwargs)
+        return self.distribution_builder(*params, **param_kwargs, __idx=idx if pass_idx else None)
 
     def sample(self, sample_shape=torch.Size()) -> torch.Tensor:
         # sample component indices
@@ -148,11 +148,12 @@ class IndexedMixture:
 
         # component log probs: (..., S)
         v = value.unsqueeze(-2).float()
-        comp = self._build_distribution(idx)
+        comp = self._build_distribution(idx, pass_idx=True)
         if aux is not None:
-            B, T = v.shape[:-2]
-            target_shape = (B, T) + aux.shape[1:]
-            aux = gather_component(aux[:, None, ...].expand(target_shape), idx)
+            if idx is not None:
+                B, T = v.shape[:-2]
+                target_shape = (B, T) + aux.shape[1:]
+                aux = gather_component(aux[:, None, ...].expand(target_shape), idx)
             log_px = comp.log_prob(v, aux)
         else:
             log_px = comp.log_prob(v)
@@ -165,6 +166,7 @@ class IndexedGaussianMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, loc: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None):
         super().__init__(logits, self.distribution_builder, loc, scale, batch_lengths=batch_lengths)
     
-    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
+    def distribution_builder(self, loc: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None,
+                             __idx: Optional[torch.Tensor]=None) -> D.Distribution:
         return D.Independent(D.Normal(loc, scale), 1)
 

@@ -339,8 +339,9 @@ class PseudoMetric(torch.nn.Module):
 class IndexedLowRankGaussianMixture(IndexedMixture):
     def __init__(self, logits: torch.Tensor, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None):
 
-        super().__init__(logits, self.distribution_builder, metric, center, scale, batch_lengths=batch_lengths)
-    
-    def distribution_builder(self, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
+            super().__init__(logits, self.distribution_builder, metric, center, scale, batch_lengths=batch_lengths)
+        
+    def distribution_builder(self, metric: PseudoMetric, center: torch.Tensor, scale: torch.Tensor, 
+                             batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None) -> D.Distribution:
         return metric.build_distribution_from_center(center, scale)
 

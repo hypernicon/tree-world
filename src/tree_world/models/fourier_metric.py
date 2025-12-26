@@ -168,11 +168,11 @@ class FourierCodeDistribution(D.Distribution):
     has_rsample = True
 
     def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
-                 batch_lengths: Optional[torch.Tensor]=None, validate_args=None):
+                 batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None, validate_args=None):
         self.metric = metric
         self.reference_location = reference_location
         self.batch_lengths = batch_lengths
-
+        self.__idx = __idx
         self.dtype = reference_location.dtype
         self.device = reference_location.device
         self.scale = scale
@@ -209,7 +209,7 @@ class FourierCodeDistribution(D.Distribution):
         super().__init__(batch_shape=batch_shape, event_shape=(self.metric.location_dim,), validate_args=validate_args)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
-        check_valid_location(self.reference_location, self.batch_lengths)
+        check_valid_location(self.reference_location, self.batch_lengths, self.__idx)
         # sample Delta x ~ N(0, I_M)
         u = torch.randn(sample_shape + self.batch_shape + (self.metric.dim,), device=self.device, dtype=self.dtype)
         scale = self.scale[..., None]
@@ -218,7 +218,7 @@ class FourierCodeDistribution(D.Distribution):
         deltas = scale * u
         locations = self.metric.apply_displacement(deltas, self.reference_location)
 
-        check_valid_location(locations, self.batch_lengths)
+        check_valid_location(locations, self.batch_lengths, self.__idx)
         return locations, deltas
     
     rsample = sample
@@ -249,8 +249,8 @@ class IndexedFourierMixture(IndexedMixture):
         super().__init__(logits, self.distribution_builder, metric, reference_location, scale, batch_lengths=batch_lengths)
     
     def distribution_builder(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
-                                   batch_lengths: Optional[torch.Tensor]=None) -> D.Distribution:
-        return FourierCodeDistribution(metric, reference_location, scale, batch_lengths)
+                             batch_lengths: Optional[torch.Tensor]=None, __idx: Optional[torch.Tensor]=None) -> D.Distribution:
+        return FourierCodeDistribution(metric, reference_location, scale, batch_lengths, __idx)
 
     def sample(self, sample_shape: Tuple[int, ...] = torch.Size()):
         locations, displacements = super().sample(sample_shape)
