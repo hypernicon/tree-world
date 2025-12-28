@@ -102,13 +102,15 @@ class FourierMetric(torch.nn.Module):
         self.register_buffer('K', K)
         self.register_buffer('K_dagger', K_dagger)
 
+        phis = torch.empty((location_dim // 2 // (2 + 1),)).uniform_(-math.pi, math.pi)
+        self.register_buffer('phis', phis) # <-- does not play into the model much, but is used for sampling
+
     def reshape_to_components(self, location: torch.Tensor):
         shape = tuple(list(location.shape[:-1]) + [self.J, self.dim + 1, 2])
 
         return location.view(*shape)
 
-    def compute_displacements(self, location1: torch.Tensor, location2: torch.Tensor):
-        # distance is the estimated displacement plus errors
+    def compute_angles(self, location1: torch.Tensor, location2: torch.Tensor):
         location1 = self.reshape_to_components(location1)  # Now has shape (..., J, d+1, 2)
         location2 = self.reshape_to_components(location2)  # Now has shape (..., J, d+1, 2)
 
@@ -118,10 +120,16 @@ class FourierMetric(torch.nn.Module):
         s2s1 = location2[..., 1] * location1[..., 1].float()
         delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1 + 1e-6)
 
+        return delta_thetas.view(delta_thetas.shape[:-2] + (-1,))
+
+    def compute_displacements(self, location1: torch.Tensor, location2: torch.Tensor):
+        # distance is the estimated displacement plus errors
+        delta_thetas = self.compute_angles(location1, location2)
+
         # estimated displacements from thetas, made as small as possible solving across alphas -- but may not agree!
         # deltas has shape (..., J, d)
         deltas = solve_for_deltas(
-            delta_thetas.view(delta_thetas.shape[:-2] + (-1,)), 
+            delta_thetas, 
             self.K_dagger.to(delta_thetas.dtype), 
             self.lattice_basis.to(delta_thetas.dtype), 
             self.alphas.to(delta_thetas.dtype)
@@ -130,17 +138,21 @@ class FourierMetric(torch.nn.Module):
 
         return deltas.to(location1.dtype), mean_deltas.to(location1.dtype)
     
-    def pseudo_distance(self, location1: torch.Tensor, location2: torch.Tensor, squared: bool=False):
+    def pseudo_distance(self, location1: torch.Tensor, location2: torch.Tensor, squared: bool=False, use_variance: bool=True):
         deltas, mean_deltas = self.compute_displacements(location1, location2)
         J = deltas.shape[-2]
         assert J > 1, "J must be greater than 1"
-        
-        dev_deltas = deltas - mean_deltas[..., None, :]
-        variances = dev_deltas.square().sum(dim=-1).mean(dim=-1) * (J / (J - 1))  # (...)
 
         squared_distances = mean_deltas.square().sum(dim=-1)
 
-        final_squared_distances = squared_distances + variances
+        if use_variance:
+            dev_deltas = deltas - mean_deltas[..., None, :]
+            variances = dev_deltas.square().sum(dim=-1).mean(dim=-1) * (J / (J - 1))  # (...)
+            
+            final_squared_distances = squared_distances + variances
+
+        else:
+            final_squared_distances = squared_distances
 
         if squared:
             return final_squared_distances
@@ -184,9 +196,24 @@ class FourierMetric(torch.nn.Module):
 
         return self.block_rotate(location, delta_thetas)
 
-    def sample(self, shape: Tuple[int, ...] = torch.Size(), device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
-        thetas = torch.empty(shape + (self.location_dim // 2 // (self.dim + 1),), device=device, dtype=dtype).uniform_(-math.pi, math.pi)
-        thetas = thetas[..., None].expand(thetas.shape + (self.dim + 1,))  # <-- within the same module, phase is shared
+    def sample(self, shape: Tuple[int, ...] = torch.Size()):
+        K = self.K
+        physical_dim = K.shape[1]
+        x = torch.randn(shape + (physical_dim,1), device=K.device, dtype=K.dtype)
+        
+        while K.ndim < x.ndim:
+            K = K[None, ...]
+        Kx = (K @ x).squeeze(-1)   # (..., d+1)
+        alphas = self.alphas[..., None] # (J, d+1)
+        while alphas.ndim < Kx.ndim:
+            alphas = alphas[None, ...]
+        aKx = alphas * Kx[..., None, :]  # (..., J, d+1)
+
+        phis = self.phis[..., None]
+        while phis.ndim < aKx.ndim:
+            phis = phis[None, ...]
+
+        thetas = aKx + phis # + xis
         return torch.stack([torch.cos(thetas), torch.sin(thetas)], dim=-1).view(shape + (self.location_dim,))
 
 

@@ -174,9 +174,9 @@ class MetricSampler(torch.nn.Module):
 
         self.scale_factor = qk_dim ** -0.5
         self.location = location
-    
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
-                close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
+
+    def build_distances(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
+                        close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
         B, T, _ = query.shape
         B, S, _ = key.shape
         B, S, E = value.shape
@@ -187,7 +187,7 @@ class MetricSampler(torch.nn.Module):
         qk_distances = self.scale_factor * self.qk_metric.cross_distance(query.float(), key.float(), squared=True)
         check_nan_inf("qk_distances", qk_distances)
 
-        mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)
+        mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)[:T, :S]
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
         assert not torch.isnan(qk_distances).any()
 
@@ -213,6 +213,23 @@ class MetricSampler(torch.nn.Module):
         else:
             qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 
+        return qk_distances, invalid_mask.squeeze(-1)
+
+    def read(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, 
+             close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
+
+        qk_distances, _ = self.build_distances(query, key, value, close_to, close_to_factor, batch_lengths)
+        attention_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
+        return torch.bmm(attention_weights, value)
+    
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
+                close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
+        B, T, _ = query.shape
+        B, S, _ = key.shape
+        B, S, E = value.shape
+
+        qk_distances, invalid_mask = self.build_distances(query, key, value, close_to, close_to_factor, batch_lengths)
+
         mixture_class = IndexedLowRankGaussianMixture if not self.location else IndexedFourierMixture
         if self.location:
             v_std = value_std[:, None, :].expand(B, T, S)
@@ -230,7 +247,7 @@ class MetricSampler(torch.nn.Module):
             v_std,   #  scale
             batch_lengths=batch_lengths,
         )
-        return dist, invalid_mask.squeeze(-1)
+        return dist, invalid_mask
 
 
 class GeometricActionDecoder(torch.nn.Module):
@@ -300,11 +317,11 @@ class TemLocalizer(torch.nn.Module):
         self.dropout = dropout
         self.fourier = fourier
 
-        self.geometric_location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
+        self.location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
         if self.fourier:
-            self.location_metric = self.gemoetric_location_metric
+            self.geometric_location_metric = self.location_metric
         else:
-            self.location_metric = PseudoMetric(location_dim, metric_rank=embed_dim)
+            self.geometric_location_metric = PseudoMetric(location_dim, metric_rank=embed_dim)
 
         self.geometric_action_decoder = GeometricActionDecoder(
             self.geometric_location_metric, location_dim, action_dim, action_hidden_dim, dropout
