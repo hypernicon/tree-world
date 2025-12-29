@@ -19,6 +19,7 @@ project:
     - file: drive-based-controller.ipynb
     - file: rl-local-map.ipynb
     - file: improving-sensory-perception.ipynb
+    - file: metrics.ipynb
 
 site:
   template: book-theme
