@@ -109,6 +109,13 @@ class FourierMetric(torch.nn.Module):
         shape = tuple(list(location.shape[:-1]) + [self.J, self.dim + 1, 2])
 
         return location.view(*shape)
+    
+    def compute_angles_from_displacements(self, displacements: torch.Tensor):
+        output_shape = displacements.shape[:-1] + (self.J, self.dim + 1)
+        displacements = displacements.view(-1, self.dim, 1)
+        thetas = (self.K[None, ...] @ displacements).squeeze(-1) # (flat_batch, d+1)
+        thetas = self.alphas[None, :, None] * thetas[..., None, :]
+        return thetas.view(output_shape)
 
     def compute_angles(self, location1: torch.Tensor, location2: torch.Tensor):
         location1 = self.reshape_to_components(location1)  # Now has shape (..., J, d+1, 2)
@@ -222,7 +229,7 @@ class FourierCodeDistribution(D.Distribution):
     has_rsample = True
 
     def __init__(self, metric: FourierMetric, reference_location: torch.Tensor, scale: torch.Tensor, 
-                 batch_lengths: Optional[torch.Tensor]=None,idx: Optional[torch.Tensor]=None, validate_args=None):
+                 batch_lengths: Optional[torch.Tensor]=None, idx: Optional[torch.Tensor]=None, validate_args=None, tau: float=1e-6):
         self.metric = metric
         self.reference_location = reference_location
         self.batch_lengths = batch_lengths
@@ -230,35 +237,13 @@ class FourierCodeDistribution(D.Distribution):
         self.dtype = reference_location.dtype
         self.device = reference_location.device
         self.scale = scale
+        self.tau = tau
 
         batch_shape = reference_location.shape[:-1]
 
         assert scale.shape == () or scale.shape == batch_shape
         if scale.shape == ():
             self.scale = self.scale.expand(batch_shape)
-
-        # jac_weights will have shape (..., d+1)
-        reference_location = self.metric.reshape_to_components(reference_location)  # Now has shape (..., J, d+1, 2)
-        alphas = self.metric.alphas
-        while alphas.ndim < reference_location.ndim - 1:
-            alphas = alphas[None, ...]
-        alphas = alphas.transpose(-2, -1) # (..., J, d+1)
-        jac_weights = (alphas.square() * reference_location.square().sum(dim=-1)).sum(dim=-2)
-
-        # K is (d+1, d); need (wK)^T K = (..., d+1, d+1)
-        K = self.metric.K
-        while K.ndim < jac_weights.ndim + 1:
-            K = K[None, ...]
-        wK = (jac_weights[..., None] * K)
-        jac_squared = K.transpose(-2, -1) @ wK
-
-        eps = 1e-6
-        I = torch.eye(self.metric.dim, device=jac_squared.device, dtype=torch.float32)
-        while I.ndim < jac_squared.ndim:
-            I = I[None, ...]
-        jac_squared = jac_squared.float() + eps * I
-        logdet = torch.logdet(jac_squared)
-        self.logdet_jac = - 0.5 * logdet.to(self.dtype)
 
         super().__init__(batch_shape=batch_shape, event_shape=(self.metric.location_dim,), validate_args=validate_args)
 
@@ -277,6 +262,31 @@ class FourierCodeDistribution(D.Distribution):
     
     rsample = sample
 
+    def log_det_jacobian(
+        self, displacements: torch.Tensor
+    ):
+        # note, this won't work for samples shapes other than ()!
+        output_shape = displacements.shape[:-1]
+
+        delta_thetas = self.metric.compute_angles_from_displacements(displacements)
+
+        dplus = self.metric.dim + 1
+        reference_location = self.reference_location.view(-1, self.metric.J, dplus, 2)
+        delta_thetas = delta_thetas.view(-1, self.metric.J, dplus)
+
+        xi = torch.atan2(reference_location[..., 1], reference_location[..., 0])
+        delta_xi = xi[..., None] - xi[..., None, :]
+        
+        delta_delta_theta = delta_thetas[..., None] - delta_thetas[..., None, :]
+
+        # shape (flat_batch, J, dplus, dplus) (vs. K = (dplus, d))
+        W = (torch.cos(delta_xi - delta_delta_theta) * self.metric.alphas.square()[None, :, None, None]).sum(dim=1)
+        K = self.metric.K[None, None, ...]
+        KWK = ((K.transpose(-2, -1) @ W) @ K).float()
+
+        logdet = 0.5 * torch.logdet(KWK + self.tau * torch.eye(self.metric.dim, device=KWK.device, dtype=torch.float32))
+        return logdet.view(output_shape).to(self.dtype)
+
     def log_prob(self, locations: torch.Tensor, displacements: Optional[torch.Tensor]=None):
         if displacements is None:
             _, displacements = self.metric.compute_displacements(self.reference_location, locations)
@@ -292,7 +302,7 @@ class FourierCodeDistribution(D.Distribution):
             - self.metric.dim * (0.5 * math.log(2.0 * math.pi) + torch.log(self.scale))
         )
 
-        return gaussian_log_prob + self.logdet_jac
+        return gaussian_log_prob - self.log_det_jacobian(displacements)
 
 
 class IndexedFourierMixture(IndexedMixture):
