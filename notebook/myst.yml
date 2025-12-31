@@ -20,6 +20,7 @@ project:
     - file: rl-local-map.ipynb
     - file: improving-sensory-perception.ipynb
     - file: metrics.ipynb
+    - file: pseudometrics.ipynb
 
 site:
   template: book-theme
