@@ -21,6 +21,7 @@ def sample_indexed_mixture(
         while batch_lengths.ndim < idx.ndim:
             batch_lengths = batch_lengths[..., None]
         idx = torch.where(idx >= batch_lengths, idx % batch_lengths, idx)
+    
     return idx
 
 
@@ -29,51 +30,44 @@ def gather_component(
     idx: torch.Tensor,      # (...,)
 ) -> torch.Tensor:
     """
-    Gathers x at indices idx along comp_dim.
-    If x is (..., S, E) and idx is (...), returns (..., E).
-    If x is (..., S) and idx is (...), returns (...).
+    idx = (B, T, K) or (B, T) with K := 1
+    Options:
+    - x: (B, S, E) -> (B, T, S->K, E)
+    - x: (B, S) -> (B, T, S->K)
+
     """
     if idx is None:
         return x
 
-    if x.ndim < idx.ndim:
-        return x
+    squeeze = False
+    if idx.ndim == 2:
+        squeeze = True
+        idx = idx.unsqueeze(-1)
+    
+    B, T, K = idx.shape
 
-    if x.ndim == idx.ndim:
-        B, Tx, S = x.shape
+    if x.ndim == 3:
+        B, S, E = x.shape
         B, T, K = idx.shape
-        if Tx != T:
-            x = x.expand(B, T, S)
-        out = x.gather(dim=-1, index=idx).squeeze(-1)
-        return out
-    elif x.ndim == idx.ndim + 1:
-        if x.ndim == 3:
-            B, Tx, S = x.shape
-            B, T = idx.shape
-            if Tx != T:
-                x = x.expand(B, T, S)
-            gather_idx = idx.unsqueeze(-1).expand(B, T, 1)
-            out = x.gather(dim=-1, index=gather_idx).squeeze(-1)
-            return out
-        else:  # x.ndim == 4
-            B, Tx, S, E = x.shape
-            B, T, K = idx.shape
-            if Tx != T:
-                x = x.expand(B, T, S, E)
-            gather_idx = idx.unsqueeze(-1).expand(B, T, K, E)
-            out = x.gather(dim=-2, index=gather_idx).squeeze(-1)
-            return out
-    elif x.ndim == idx.ndim + 2:
-        # x: (..., S, E)
-        B, Tx, S, E = x.shape
-        B, T = idx.shape
-        if Tx != T:
-            x = x.expand(B, T, S, E)
-        gather_idx = idx.unsqueeze(-1).unsqueeze(-1).expand(B, T, 1, E)
-        out = x.gather(dim=-2, index=gather_idx).squeeze(-2)
-        return out
+        x = x.unsqueeze(1).expand(B, T, S, E)
+        out = x.gather(dim=-2, index=idx.unsqueeze(-1).expand(B, T, K, E))
+
+        if squeeze:
+            out = out.squeeze(2)
+        
+    elif x.ndim == 2:
+        B, S = x.shape
+        B, T, K = idx.shape
+        x = x.unsqueeze(1).expand(B, T, S)
+        out = x.gather(dim=-1, index=idx)
+
+        if squeeze:
+            out = out.squeeze(-1)
+
     else:
         raise ValueError(f"Unsupported shapes: x {x.shape}, idx {idx.shape}")
+    
+    return out
 
 
 class IndexedMixture:
@@ -95,8 +89,8 @@ class IndexedMixture:
             params = self.params
             param_kwargs = self.param_kwargs
         else:
-            params = [gather_component(p, idx) if isinstance(p, torch.Tensor) else p for p in self.params]
-            param_kwargs = {k: gather_component(v, idx) if isinstance(v, torch.Tensor) else v for k, v in self.param_kwargs.items()}
+            params = [gather_component(p, idx) if isinstance(p, torch.Tensor) and p.ndim > 1 else p for p in self.params]
+            param_kwargs = {k: gather_component(v, idx) if isinstance(v, torch.Tensor) and v.ndim > 1 else v for k, v in self.param_kwargs.items()}
         
         from .fourier_metric import check_valid_location, FourierMetric
         if isinstance(params[0], FourierMetric):
@@ -136,20 +130,23 @@ class IndexedMixture:
         else:
             log_mix = torch.log_softmax(self.logits.float(), dim=-1)  # (..., S)
 
-        # component log probs: (..., S)
-        v = value.unsqueeze(-2).float()
+        # component log probs: (...)
         comp = self._build_distribution(idx, pass_idx=True)
+        value = gather_component(value, idx)
         if aux is not None:
             if idx is not None:
-                B, T = v.shape[:-2]
-                target_shape = (B, T) + aux.shape[1:]
-                aux = gather_component(aux[:, None, ...].expand(target_shape), idx)
-            log_px = comp.log_prob(v, aux)
+                aux = gather_component(aux, idx)
+
+            log_px = comp.log_prob(value, aux)
+            
         else:
-            log_px = comp.log_prob(v)
+            log_px = comp.log_prob(value)
 
         z = log_mix + log_px
-        return torch.logsumexp(z, dim=-1).to(log_px.dtype)
+        # assert (z <= 0.0).all(), f"z: {z.min().item()}, {z.mean().item()}, {z.max().item()}"
+        lp = torch.logsumexp(z, dim=-1).to(log_px.dtype)
+        # assert (lp <= 0.0).all(), f"lp: {lp.min().item()}, {lp.mean().item()}, {lp.max().item()}"
+        return lp
 
 
 class IndexedGaussianMixture(IndexedMixture):

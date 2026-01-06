@@ -1,5 +1,11 @@
 import torch
 import math
+import itertools
+
+
+def safe_atan2(y, x, eps=1e-6):
+    x = torch.where(x.abs() < eps, torch.full_like(x, eps), x)
+    return torch.atan2(y, x)
 
 
 def make_lattice_basis(alphas, dim: int = 2):
@@ -71,16 +77,45 @@ def make_alphas(location_dim: int, dim: int = 2, scale: float = 10.0,
 def solve_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
     d, dplus = K_dagger.shape
     J, _, _ = lattice_basis.shape
-    shape = delta_thetas.shape[:-1] + (J, dplus)
-    delta_thetas = delta_thetas.view(shape)[..., None]
-    while K_dagger.ndim < delta_thetas.ndim:
-        K_dagger = K_dagger[None, ...]
-    displacement_base = (K_dagger @ delta_thetas).view(shape[:-1] + (d,)) / alphas[None, :, None]
-    reference_displacement = displacement_base[..., 0, :]
-    errors = reference_displacement[..., None, :] - displacement_base
-    lattice_basis = lattice_basis.view(J, d, d)
-    while lattice_basis.ndim < errors.ndim + 1:
-        lattice_basis = lattice_basis[None, ...]
-    offsets = torch.linalg.solve(lattice_basis.float(), errors[..., None].float()).round().to(delta_thetas.dtype)
-    deltas = displacement_base + (lattice_basis @ offsets).squeeze(-1)
-    return deltas.view(shape[:-1] + (d,))
+    shape = delta_thetas.shape[:-1]
+    delta_thetas = delta_thetas.view(-1, J, dplus)  # (B, J, dplus)
+    K_dagger = K_dagger[None, ...]   # (B, d, dplus)
+    displacement_base = (delta_thetas @ K_dagger.transpose(-2, -1)) / alphas[None, :, None]
+    displacement_base = displacement_base.view(shape + (J, d))
+    return solve_for_displacements(displacement_base, lattice_basis)
+
+
+def solve_for_displacements(displacement_base: torch.Tensor, lattice_basis: torch.Tensor):
+    J, _, _ = lattice_basis.shape
+    d = displacement_base.shape[-1]
+    shape = displacement_base.shape
+    displacement_base = displacement_base.view(-1, J, d)
+    reference_displacement = displacement_base[:, 0, :]
+    errors = reference_displacement[:, None, :] - displacement_base    # (B, J, d)
+    lattice_basis = lattice_basis[None, ...]
+    n_star = torch.linalg.solve(lattice_basis.float(), errors[..., None].float())
+    n0 = n_star.round().squeeze(-1)
+
+    # enumerate candidate integer offsets around n0
+    # for d=2: 9 candidates; d=3: 27 candidates
+    offsets = torch.tensor(
+        list(itertools.product([-1, 0, 1], repeat=d)),
+        device=errors.device, 
+        dtype=errors.dtype
+    )  # (C,d)
+
+    # candidates: (B,J,C,d)
+    cand_n = n0[..., None, :] + offsets[None, None, :, :]
+
+    # residuals: r = err - B @ cand_n
+    # (B,J,C,d,1) = (1,J,d,d) @ (B,J,C,d,1)
+    B_cand = (lattice_basis[..., None, :, :] @ cand_n[..., None]).squeeze(-1)  # (B,J,C,d)
+    resid = errors[..., None, :] - B_cand                              # (B,J,C,d)
+    resid2 = (resid * resid).sum(dim=-1)                               # (B,J,C)
+
+    best_resid2, best = resid2.min(dim=-1)  # (B,J)                                       # (B,J)
+    best_n = cand_n.gather(dim=2, index=best[..., None, None].expand(-1, -1, 1, d)).squeeze(2)  # (B,J,d)
+
+    deltas = displacement_base + (lattice_basis.squeeze(0) @ best_n[..., None]).squeeze(-1)     # (B,J,d)
+    #deltas = torch.cat([reference_displacement[..., None, :], deltas[..., 1:, :]], dim=-2)
+    return deltas.view(shape), best_resid2.view(shape[:-1])

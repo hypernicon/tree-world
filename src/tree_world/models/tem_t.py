@@ -17,14 +17,16 @@ def check_nan_inf(name, t):
 
 
 def loss_for_deltas(delta_thetas: torch.Tensor, K_dagger: torch.Tensor, lattice_basis: torch.Tensor, alphas: torch.Tensor):
-    deltas = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)  # (B, T, J, d)
-    mean_deltas = deltas.mean(dim=-2)  # (B, T, d)
+    deltas, residuals = solve_for_deltas(delta_thetas, K_dagger, lattice_basis, alphas)  # (B, T, J, d)
+    sigma2 = 1.0  # tune
+    w = torch.softmax(-residuals / (2*sigma2), dim=-1)  # (...,J)
+    mean_deltas = (w[..., None] * deltas).sum(dim=-2)       # (...,d)
     J = deltas.shape[-2]
 
     dev_deltas = deltas - mean_deltas[..., None, :]  # (B, T, J, d)
     variances = dev_deltas.square().sum(dim=-1).mean(dim=-1) * (J / (J - 1))  # (B, T)
 
-    return variances.mean()
+    return variances
 
 
 def scaled_dot_product_attention(query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, attn_mask: Optional[torch.Tensor]=None, num_heads: int=1):
@@ -175,8 +177,8 @@ class MetricSampler(torch.nn.Module):
         self.scale_factor = qk_dim ** -0.5
         self.location = location
 
-    def build_distances(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor,
-                        close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
+    def build_distances(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, qk_cutoff: float=10.0,
+                        close_to: Optional[torch.Tensor]=None, close_to_cutoff: float=10.0, batch_lengths: Optional[torch.Tensor]=None):
         B, T, _ = query.shape
         B, S, _ = key.shape
         B, S, E = value.shape
@@ -187,16 +189,23 @@ class MetricSampler(torch.nn.Module):
         qk_distances = self.scale_factor * self.qk_metric.cross_distance(query.float(), key.float(), squared=True)
         check_nan_inf("qk_distances", qk_distances)
 
-        mask = torch.tril(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=-1)[:T, :S]
+        mask = torch.triu(torch.ones((max(S, T), max(S, T)), dtype=torch.bool, device=query.device), diagonal=0)[:T, :S]
         qk_distances = qk_distances.masked_fill(mask[None, :, :], float('inf'))
         assert not torch.isnan(qk_distances).any()
 
+        if qk_cutoff is not None:
+            qk_disallowed = qk_distances >= qk_cutoff
+            qk_distances = qk_distances.masked_fill(qk_disallowed, float('inf'))
+
+        allowed_comparisons = None
         if close_to is not None:
             # close_to has shape (B, S, D) --> distances (B, S)
             v_scale = E ** -0.5
             close_to_distances = (v_scale * self.v_metric.pseudo_distance(value.float(), close_to.float(), squared=True))
+            allowed_comparisons = allowed_comparisons & (close_to_distances < close_to_cutoff)
             assert not torch.isnan(close_to_distances).any()
-            qk_distances = qk_distances + close_to_factor * close_to_distances[:, None, :]
+            qk_distances = qk_distances + close_to_distances[:, None, :]
+            qk_distances = qk_distances.masked_fill(~allowed_comparisons[:, None, :], float('inf'))
         
         qk_distances = qk_distances.to(value.dtype)
 
@@ -213,41 +222,47 @@ class MetricSampler(torch.nn.Module):
         else:
             qk_distances = qk_distances.masked_fill(invalid_mask, 1.0)
 
-        return qk_distances, invalid_mask.squeeze(-1)
+        return qk_distances, invalid_mask.squeeze(-1), allowed_comparisons
 
     def read(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, 
-             close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
+             close_to: Optional[torch.Tensor]=None, close_to_cutoff: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
 
-        qk_distances, _ = self.build_distances(query, key, value, close_to, close_to_factor, batch_lengths)
+        qk_distances, _, _ = self.build_distances(query, key, value, close_to, close_to_cutoff, batch_lengths)
         attention_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
         return torch.bmm(attention_weights, value)
     
-    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor,
-                close_to: Optional[torch.Tensor]=None, close_to_factor: float=1.0, batch_lengths: Optional[torch.Tensor]=None):
-        B, T, _ = query.shape
-        B, S, _ = key.shape
-        B, S, E = value.shape
+    def forward(self, query: torch.Tensor, key: torch.Tensor, value: torch.Tensor, value_std: torch.Tensor, qk_cutoff: float=10.0,
+                close_to: Optional[torch.Tensor]=None, close_to_cutoff: float=1.0, batch_lengths: Optional[torch.Tensor]=None,
+                v_default: Optional[torch.Tensor]=None):
 
-        qk_distances, invalid_mask = self.build_distances(query, key, value, close_to, close_to_factor, batch_lengths)
+        qk_distances, invalid_mask, allowed_comparisons = self.build_distances(query, key, value, qk_cutoff, close_to, close_to_cutoff, batch_lengths)
+        
+        attention_weights = torch.softmax(-0.5 * qk_distances, dim=-1)
 
-        mixture_class = IndexedLowRankGaussianMixture if not self.location else IndexedFourierMixture
         if self.location:
-            v_std = value_std[:, None, :].expand(B, T, S)
-            # v = value.view(-1, 2)
-            # v = v / (torch.norm(v, dim=-1, keepdim=True) + 1e-8)
-            # value = v.view_as(value)
-            check_valid_location(value, batch_lengths)
+            location_centroid = self.v_metric.weighted_average(attention_weights, value)
+            if v_default is not None:
+                while v_default.ndim < 3:
+                    v_default = v_default[None, ...]
+                location_centroid = torch.where(
+                    invalid_mask[..., None], 
+                    v_default,
+                    location_centroid
+                )
+            dist = FourierCodeDistribution(self.v_metric, location_centroid, value_std, batch_lengths=batch_lengths)
         else:
-            v_std = value_std[:, None, :, :].expand(B, T, S, E)
+            value_centroid = torch.bmm(attention_weights, value)
+            if v_default is not None:
+                while v_default.ndim < 3:
+                    v_default = v_default[None, ...]
+                value_centroid = torch.where(
+                    invalid_mask[..., None], 
+                    v_default,
+                    value_centroid
+                )
+            dist = self.v_metric.build_distribution_from_center(value_centroid, value_std)
 
-        dist = mixture_class(
-            -0.5 * qk_distances,                              #  logits
-            self.v_metric,
-            value[:, None, :, :].expand(-1, T, -1, -1),       #  center
-            v_std,   #  scale
-            batch_lengths=batch_lengths,
-        )
-        return dist, invalid_mask
+        return dist, invalid_mask, allowed_comparisons
 
 
 class GeometricActionDecoder(torch.nn.Module):
@@ -260,15 +275,18 @@ class GeometricActionDecoder(torch.nn.Module):
         self.dropout = dropout
         assert location_dim % 2 == 0
 
-        self.action_mlp = torch.nn.Sequential(
-            torch.nn.Linear(action_dim, hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, hidden_dim),
-            torch.nn.ReLU(),
-            torch.nn.Linear(hidden_dim, location_dim // 2),
-        )
+        # self.action_mlp = torch.nn.Sequential(
+        #     torch.nn.Linear(action_dim, hidden_dim),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Linear(hidden_dim, hidden_dim),
+        #     torch.nn.ReLU(),
+        #     torch.nn.Linear(hidden_dim, location_dim // 2),
+        # )
 
-        self.scale = torch.nn.Parameter(torch.ones(1,1) * 5.0)
+        self.register_buffer('scale', torch.ones(1,1) * 5.0)
+
+    def update_scale(self, scale: float):
+        self.scale.data = torch.ones(1,1) * scale
 
     def forward(self, location: torch.Tensor, action: torch.Tensor, eps: float=1e-6, 
                 allow_extension: bool=True, regularize: bool=True):
@@ -277,7 +295,8 @@ class GeometricActionDecoder(torch.nn.Module):
         assert (B, T, self.action_dim) == action.shape
 
         # use a block diagonal matrix to rotate the location
-        thetas = self.action_mlp(action)
+        # thetas = self.action_mlp(action)
+        thetas = self.metric.compute_angles_from_displacements(action).view(B, T, -1)
 
         # if we wanted to be explicit (since our actions are actually displacements in physical space), we could do this:
         # thetas = self.alphas[None, None, :, None] * ((self.K[None, None, ...] @ action[..., None]).view(B, T, -1, self.physical_dim + 1)) 
@@ -300,7 +319,7 @@ class GeometricActionDecoder(torch.nn.Module):
     
     def logprobs(self, location: torch.Tensor, mean_location: torch.Tensor):
         B, T, D = location.shape
-        comp = FourierCodeDistribution(self.metric, mean_location, self.scale.expand(B, T))
+        comp = FourierCodeDistribution(self.metric, mean_location, torch.nn.functional.softplus(self.scale).expand(B, T))
         return comp.log_prob(location)
 
 
@@ -317,34 +336,40 @@ class TemLocalizer(torch.nn.Module):
         self.dropout = dropout
         self.fourier = fourier
 
-        self.location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
         if self.fourier:
+            self.location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
             self.geometric_location_metric = self.location_metric
         else:
-            self.geometric_location_metric = PseudoMetric(location_dim, metric_rank=embed_dim)
+            self.location_metric = PseudoMetric(location_dim, metric_rank=embed_dim)
+            self.geometric_location_metric = FourierMetric(location_dim, physical_dim, physical_scale, physical_ratio)
 
         self.geometric_action_decoder = GeometricActionDecoder(
             self.geometric_location_metric, location_dim, action_dim, action_hidden_dim, dropout
         )
 
         self.sensory_metric = PseudoMetric(sensory_dim, metric_rank=embed_dim)
-        self.sensory_metric_with_location = PseudoMetric(sensory_dim, metric_rank=embed_dim)
+        # self.sensory_metric_with_location = PseudoMetric(sensory_dim, metric_rank=embed_dim)
 
-        if self.fourier:
-            self.location_scale = torch.nn.Parameter(torch.ones(1, 1) * 5.0)
-        else:
-            self.location_scale = torch.nn.Parameter(torch.zeros(1, 1, 1) * 5.0)
-
-        self.sensory_error_mlp = ErrorMLP(location_dim, sensory_dim, scale=.1)
+        self.sensory_default = torch.nn.Parameter(torch.zeros(sensory_dim))
+        
+        # self.location_error_mlp = ErrorMLP(location_dim, 1, scale=1.0)
+        # self.sensory_error_mlp = ErrorMLP(location_dim, 1, scale=.1)
+        self.location_scale = torch.nn.Parameter(torch.ones(1,1))
+        self.sensory_scale = torch.nn.Parameter(torch.ones(1,1) * 0.1)
 
         self.location_refiner = MetricSampler(
-            self.sensory_metric_with_location, self.location_metric, self.sensory_dim, location=self.fourier
+            self.sensory_metric, self.location_metric, self.sensory_dim, location=self.fourier
         )
         self.sensory_predictor = MetricSampler(
             self.location_metric, self.sensory_metric, self.location_dim, location=False
         )
 
-        self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
+        # self.position_encoder = torch.nn.Linear(location_dim, sensory_dim, bias=False)
+    
+    def reset(self):
+        self.sensory_metric.reset()
+        if not self.fourier: 
+            self.location_metric.reset()
 
     def remove_prefix(self, tensor: torch.Tensor, prefix_length: torch.Tensor, batch_lengths: torch.Tensor):
         """
@@ -380,10 +405,13 @@ class TemLocalizer(torch.nn.Module):
             return self.sample_fourier_location(initial_location, location_distribution, batch_lengths)
         else:
             return location_distribution.sample(), None
+    
+    def update_geometric_scale(self, location_disagreement: float):
+        self.geometric_action_decoder.update_scale(location_disagreement)
 
     def forward(self, sensory: torch.Tensor, prior_location: Optional[torch.Tensor]=None, action: Optional[torch.Tensor]=None, 
-                max_steps: int=2, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
-                batch_lengths: Optional[torch.Tensor]=None):
+                max_steps: int=1, threshold: float=0.05, refine_alpha: float=0.1, eps: float=1e-6, prefix_length: Union[int, torch.Tensor]=0,
+                batch_lengths: Optional[torch.Tensor]=None, kl_weight: float=1.0):
         B, T, S = sensory.shape
         assert max_steps > 0
         if isinstance(prefix_length, int):
@@ -396,8 +424,8 @@ class TemLocalizer(torch.nn.Module):
             batch_lengths = T * torch.ones((B,), dtype=torch.long, device=sensory.device)
 
         if prior_location is None:
-            initial_location = self.location_metric.sample((B, 1), device=sensory.device, dtype=sensory.dtype)
-            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0, 0.0
+            initial_location = self.location_metric.origin((B, 1), device=sensory.device, dtype=sensory.dtype)
+            return initial_location, initial_location, torch.zeros_like(sensory), 0.0, 0.0, 0.0, 0.0, 0.0
         
         # These next two ifs let us just supply the previous output location and action sequence, and extend them to the new length
         if prior_location.shape[1] < T:
@@ -415,7 +443,7 @@ class TemLocalizer(torch.nn.Module):
                 torch.zeros((B, T - prefix_length.min() - action.shape[1], self.action_dim,), dtype=action.dtype, device=action.device),
             ], dim=1)
 
-        sensory_location = prior_location
+        # sensory_location = prior_location
         check_nan_inf("prior_location", prior_location)
         check_valid_location(prior_location, batch_lengths)
 
@@ -427,8 +455,14 @@ class TemLocalizer(torch.nn.Module):
         ) # <-- we've already extended the action sequence
         geometric_location = self.restore_prefix(prior_location, geometric_location_minus_prefix, prior_location_indices)
         check_valid_location(geometric_location, batch_lengths)
-        sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient 
-        check_nan_inf("sensory_plus_geometric", sensory_plus_geometric)
+
+        displacement_length_mask = torch.arange(displacement_loss.shape[1], device=geometric_location.device)[None, :] < (batch_lengths - prefix_length)[:, None]
+        displacement_loss = displacement_loss.masked_fill(displacement_length_mask, 0.0)
+        displacement_loss = displacement_loss.sum(dim=-1) / ((~displacement_length_mask).to(displacement_loss.dtype).sum(dim=-1) + 1e-6)
+        displacement_loss = displacement_loss.mean()
+
+        #sensory_plus_geometric = self.make_sensory_keys(geometric_location.detach(), sensory) # <-- stop_gradient 
+        #check_nan_inf("sensory_plus_geometric", sensory_plus_geometric)
         
         # if sensory_key_prefix is not None and location_prefix is not None:
         #     sensory_plus_geometric_with_prefix = torch.cat([sensory_key_prefix, sensory_plus_geometric], dim=1)
@@ -436,11 +470,13 @@ class TemLocalizer(torch.nn.Module):
         # else:
         #     sensory_plus_geometric_with_prefix = sensory_plus_geometric
         #    sensory_location_with_prefix = sensory_location
-
+        """
+        location_std = torch.nn.functional.softplus(self.location_scale).expand(B, T)
         for k in range(max_steps):
-            location_distribution, location_invalid_mask = self.location_refiner(
-                sensory_plus_geometric, sensory_plus_geometric, sensory_location, torch.nn.functional.softplus(self.location_scale),
-                close_to=geometric_location.detach(), close_to_factor=1.0, batch_lengths=batch_lengths
+            location_distribution, location_invalid_mask, allowed_comparisons = self.location_refiner(
+                sensory, sensory, sensory_location, location_std,
+                close_to=geometric_location.detach(), close_to_cutoff=0.25, batch_lengths=batch_lengths,
+                v_default=geometric_location.detach()
             )
 
             with torch.no_grad():
@@ -454,71 +490,72 @@ class TemLocalizer(torch.nn.Module):
         # VAE requires that we sample the encoder, not the decoder, so we use the sensory location as the next location
         with torch.no_grad():
             next_location, displacements = self.sample_location(initial_location, location_distribution, batch_lengths)
+        """
 
-        if B > 1:
-            print(f"next_location: min: {next_location.min().item()}, mean: {next_location.mean().item()}, max: {next_location.max().item()}")
+        next_location = geometric_location
+        # displacements = None
+
         check_nan_inf("next_location", next_location) 
 
-        next_location_minus_prefix, _ = self.remove_prefix(next_location, prefix_length, batch_lengths)
-        geometric_logprobs = self.geometric_action_decoder.logprobs(
-            next_location_minus_prefix, geometric_location_minus_prefix
+        # next_location_minus_prefix, _ = self.remove_prefix(next_location, prefix_length, batch_lengths)
+        # geometric_logprobs = self.geometric_action_decoder.logprobs(
+        #     next_location_minus_prefix, geometric_location_minus_prefix
+        # )
+
+        # sensory_location_logprobs = location_distribution.log_prob(next_location, displacements)# , top_k=32)
+        # sensory_location_logprobs_minus_prefix, _ = self.remove_prefix(
+        #     sensory_location_logprobs, prefix_length, batch_lengths
+        # )
+
+        # kl_divergence = sensory_location_logprobs_minus_prefix - geometric_logprobs
+        # location_invalid_mask_minus_prefix, location_invalid_mask_indices = self.remove_prefix(
+        #     location_invalid_mask, prefix_length, batch_lengths
+        # )
+        # mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask_minus_prefix
+        # mask = mask | (location_invalid_mask_indices >= batch_lengths[:, None])
+        # kl_divergence = kl_divergence.masked_fill(mask, 0.0)
+        # kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-6)
+        # check_nan_inf("kl_divergence", kl_divergence)
+
+        sensory_std = torch.nn.functional.softplus(self.sensory_scale).expand(B, T)
+        sensory_distribution, sensory_invalid_mask, _ = self.sensory_predictor(
+            next_location, next_location, sensory, sensory_std, batch_lengths=batch_lengths, v_default=self.sensory_default
         )
 
-        if self.fourier:
-            sensory_location_logprobs = location_distribution.log_prob(next_location, top_k=32)
-        else:
-            sensory_location_logprobs = location_distribution.log_prob(next_location, displacements, top_k=32)
+        # with torch.no_grad():
+        #    sensory_predicted, u = sensory_distribution.sample()
+        sensory_predicted = sensory_distribution.loc
 
-        sensory_location_logprobs = location_distribution.log_prob(next_location, displacements, top_k=32)
-        sensory_location_logprobs_minus_prefix, _ = self.remove_prefix(
-            sensory_location_logprobs, prefix_length, batch_lengths
-        )
-
-        kl_divergence = sensory_location_logprobs_minus_prefix - geometric_logprobs
-        location_invalid_mask_minus_prefix, location_invalid_mask_indices = self.remove_prefix(
-            location_invalid_mask, prefix_length, batch_lengths
-        )
-        mask = torch.isnan(kl_divergence) | torch.isinf(kl_divergence) | location_invalid_mask_minus_prefix
-        mask = mask | (location_invalid_mask_indices >= batch_lengths[:, None])
-        kl_divergence = kl_divergence.masked_fill(mask, 0.0)
-        kl_divergence = kl_divergence.sum(dim=-1) / ((~mask).to(kl_divergence.dtype).sum(dim=-1) + 1e-6)
-        check_nan_inf("kl_divergence", kl_divergence)
-
-        sensory_std = self.sensory_error_mlp(next_location)
-        sensory_distribution, sensory_invalid_mask = self.sensory_predictor(
-            next_location, next_location, sensory, sensory_std
-        )
-
-        with torch.no_grad():
-            sensory_predicted = sensory_distribution.sample()
-        
         if B > 1:
-            print(f"sensory_predicted: min: {sensory_predicted.min().item()}, mean: {sensory_predicted.mean().item()}, max: {sensory_predicted.max().item()}")
-
-        sensory_logprobs = sensory_distribution.log_prob(sensory, top_k=32)
-        mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) | sensory_invalid_mask
-        mask = mask | (torch.arange(T, device=sensory.device)[None, :] >= batch_lengths[:, None])
-        sensory_logprobs = sensory_logprobs.masked_fill(mask, 0.0)
-        sensory_logprobs = sensory_logprobs.sum(dim=-1) / ((~mask).to(sensory_logprobs.dtype).sum(dim=-1) + 1e-6)
+            print(f"sensory_predicted: (scale {torch.nn.functional.softplus(self.sensory_scale)}) min {sensory_predicted.min()}, mean {sensory_predicted.mean()}, max {sensory_predicted.max()}")
+        
+        sensory_logprobs = sensory_distribution.log_prob(sensory, None)# , top_k=32)
+        sensory_mask = torch.isnan(sensory_logprobs) | torch.isinf(sensory_logprobs) #  | sensory_invalid_mask
+        sensory_mask = sensory_mask | (torch.arange(T, device=sensory.device)[None, :] >= batch_lengths[:, None])
+        sensory_denom = (~sensory_mask).to(sensory_logprobs.dtype).sum(dim=-1).clamp(min=1e-6)
+        sensory_logprobs = sensory_logprobs.masked_fill(sensory_mask, 0.0)
+        sensory_logprobs = sensory_logprobs.sum(dim=-1) / sensory_denom
         sensory_logprobs = sensory_logprobs.mean()
         check_nan_inf("sensory_logprobs", sensory_logprobs)
 
         sensory_error = (sensory - sensory_predicted).pow(2).sum(dim=-1)
-        sensory_error = sensory_error.masked_fill(sensory_invalid_mask, 0.0)
-        sensory_error = sensory_error.sum() / ((~sensory_invalid_mask).to(sensory_error.dtype).sum() + 1e-6)
+        sensory_error = sensory_error.masked_fill(sensory_mask, 0.0)
+        sensory_error = sensory_error.sum(dim=-1) / sensory_denom
 
-        if not (kl_divergence >= 0.0).all() and B > 1:
-            print(f"kl_divergence is negative: {kl_divergence[kl_divergence < 0.0].shape}")
-            print(f"kl_divergence: {kl_divergence.detach().cpu().float().numpy().tolist()}")
-        elbo = sensory_logprobs - kl_divergence.mean()
+        # if not (kl_divergence >= 0.0).all() and B > 1:
+        #     print(f"kl_divergence is negative: {kl_divergence[kl_divergence < 0.0].shape}")
+        #     print(f"kl_divergence: {kl_divergence.detach().cpu().float().numpy().tolist()}")
+
+        # elbo = sensory_logprobs - kl_weight * kl_divergence.mean()
 
         return (
-            next_location.detach(), 
+            geometric_location.detach(), # next_location.detach(), 
             geometric_location.detach(), 
             sensory_predicted.detach(), 
-            elbo, 
+            sensory_logprobs, # elbo,
+            sensory_logprobs, 
             sensory_error.mean().detach(), 
-            location_disagreement.mean().detach(), 
+            torch.tensor(0.0, device=geometric_location.device), #location_disagreement.mean().detach(), 
             displacement_loss
         )
     

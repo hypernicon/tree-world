@@ -3,7 +3,7 @@ import torch.distributions as D
 import math
 from typing import Optional, Union, Callable, Tuple
 
-from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas
+from ..fourier import make_alphas, make_lattice_basis, solve_for_deltas, solve_for_displacements, safe_atan2
 from .mixture import IndexedMixture
 
 
@@ -118,32 +118,42 @@ class FourierMetric(torch.nn.Module):
         return thetas.view(output_shape)
 
     def compute_angles(self, location1: torch.Tensor, location2: torch.Tensor):
-        location1 = self.reshape_to_components(location1)  # Now has shape (..., J, d+1, 2)
-        location2 = self.reshape_to_components(location2)  # Now has shape (..., J, d+1, 2)
+        """
+        Compute the angle to block-rotate from location 1 to location 2
+        """
+        location1 = self.reshape_to_components(location1).float()  # Now has shape (..., J, d+1, 2)
+        location2 = self.reshape_to_components(location2).float()  # Now has shape (..., J, d+1, 2)
 
-        s2c1 = location2[..., 1] * location1[..., 0].float()
-        c2s1 = location2[..., 0] * location1[..., 1].float()
-        c2c1 = location2[..., 0] * location1[..., 0].float()
-        s2s1 = location2[..., 1] * location1[..., 1].float()
-        delta_thetas = torch.atan2(s2c1 - c2s1, c2c1 + s2s1 + 1e-6)
+        s2c1 = location2[..., 1] * location1[..., 0]
+        c2s1 = location2[..., 0] * location1[..., 1]
+        c2c1 = location2[..., 0] * location1[..., 0]
+        s2s1 = location2[..., 1] * location1[..., 1]
+        delta_thetas = safe_atan2(s2c1 - c2s1, c2c1 + s2s1)
 
-        return delta_thetas.view(delta_thetas.shape[:-2] + (-1,))
+        return delta_thetas.view(delta_thetas.shape[:-2] + (-1,)).to(location1.dtype)
 
     def compute_displacements(self, location1: torch.Tensor, location2: torch.Tensor):
+        """
+        Compute the displacement to move from location 1 to location 2
+        """
         # distance is the estimated displacement plus errors
         delta_thetas = self.compute_angles(location1, location2)
 
         # estimated displacements from thetas, made as small as possible solving across alphas -- but may not agree!
         # deltas has shape (..., J, d)
-        deltas = solve_for_deltas(
+        deltas, residuals = solve_for_deltas(
             delta_thetas, 
             self.K_dagger.to(delta_thetas.dtype), 
             self.lattice_basis.to(delta_thetas.dtype), 
             self.alphas.to(delta_thetas.dtype)
         )
+        # soft weighting
+        sigma2 = 1.0  # tune
+        w = torch.softmax(-residuals / (2*sigma2), dim=-1)  # (...,J)
+        mean_deltas = (w[..., None] * deltas).sum(dim=-2)       # (...,d)
         mean_deltas = deltas.mean(dim=-2)
 
-        return deltas.to(location1.dtype), mean_deltas.to(location1.dtype)
+        return deltas, mean_deltas
     
     def pseudo_distance(self, location1: torch.Tensor, location2: torch.Tensor, squared: bool=False, use_variance: bool=True):
         deltas, mean_deltas = self.compute_displacements(location1, location2)
@@ -203,10 +213,15 @@ class FourierMetric(torch.nn.Module):
 
         return self.block_rotate(location, delta_thetas)
 
-    def sample(self, shape: Tuple[int, ...] = torch.Size()):
+    def sample(self, shape: Tuple[int, ...] = torch.Size(), device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
+        if device is None:
+            device = self.K.device
+        if dtype is None:
+            dtype = self.K.dtype
+
         K = self.K
         physical_dim = K.shape[1]
-        x = torch.randn(shape + (physical_dim,1), device=K.device, dtype=K.dtype)
+        x = torch.randn(shape + (physical_dim,1), device=device, dtype=dtype)
         
         while K.ndim < x.ndim:
             K = K[None, ...]
@@ -222,6 +237,65 @@ class FourierMetric(torch.nn.Module):
 
         thetas = aKx + phis # + xis
         return torch.stack([torch.cos(thetas), torch.sin(thetas)], dim=-1).view(shape + (self.location_dim,))
+    
+    def origin(self, shape: Tuple[int, ...] = torch.Size(), device: Optional[torch.device]=None, dtype: Optional[torch.dtype]=None):
+        if device is None:
+            device = self.K.device
+        if dtype is None:
+            dtype = self.K.dtype
+
+        phis = self.phis[:, None]
+        while phis.ndim < len(shape) + 2:
+            phis = phis[None, ...]
+
+        phis = phis.expand(shape + (self.J, self.dim + 1))
+        return torch.stack([torch.cos(phis), torch.sin(phis)], dim=-1).view(shape + (self.location_dim,))
+
+    def weighted_average(self, weights: torch.Tensor, locations: torch.Tensor):
+        """
+        Compute the weighted average of a set of locations by passing to displacements, averaging, and projecting back
+        """
+        B, S, L = locations.shape
+        B, T, S = weights.shape
+        origin = self.origin(locations.shape[:-1])
+        _, displacements = self.compute_displacements(origin, locations)
+        average_displacement = weights @ displacements
+
+        return self.apply_displacement(average_displacement, origin)
+    
+    def interpret(self, locations: torch.Tensor):
+        """
+        Calculate the expected d-dimensional locations given a starting location
+        assume l_t = (cos aKx + phis, sin aKx + phis)
+        """
+        locations = self.reshape_to_components(locations)
+        shape = locations.shape[:-3]
+        locations = locations.view(-1, self.J, self.dim + 1, 2)
+        thetas = safe_atan2(locations[..., 1], locations[..., 0])
+
+        thetas = (thetas - self.phis[None, :, None]) / self.alphas[None, :, None] # (B, J, d+1)
+        xs = thetas @ self.K_dagger.T[None, ...] # (B, J, d)
+        xs = xs.reshape(shape + (self. J, self.dim))
+        displacements, residuals = solve_for_displacements(xs, self.lattice_basis)
+        
+        # soft weighting
+        sigma2 = 1.0  # tune
+        w = torch.softmax(-residuals / (2*sigma2), dim=-1)  # (...,J)
+        mean = (w[..., None] * displacements).sum(dim=-2)       # (...,d)
+
+        return displacements, mean
+
+    def encode(self, points: torch.Tensor):
+        """
+        Convert d-dimensional points to Fourier coefficients
+        """
+        shape = points.shape[:-1]
+        points = points.view(-1, self.dim)
+        thetas = (points @ self.K.T)     # (B, d+1)
+        thetas = thetas[..., None, :] * self.alphas[None, :, None]
+        thetas = thetas + self.phis[None, :, None]
+        locations = torch.stack([torch.cos(thetas), torch.sin(thetas)], dim=-1)
+        return locations.view(shape + (self.location_dim,))
 
 
 class FourierCodeDistribution(D.Distribution):
@@ -271,10 +345,10 @@ class FourierCodeDistribution(D.Distribution):
         delta_thetas = self.metric.compute_angles_from_displacements(displacements)
 
         dplus = self.metric.dim + 1
-        reference_location = self.reference_location.view(-1, self.metric.J, dplus, 2)
+        reference_location = self.reference_location.reshape(-1, self.metric.J, dplus, 2)
         delta_thetas = delta_thetas.view(-1, self.metric.J, dplus)
 
-        xi = torch.atan2(reference_location[..., 1], reference_location[..., 0])
+        xi = safe_atan2(reference_location[..., 1], reference_location[..., 0])
         delta_xi = xi[..., None] - xi[..., None, :]
         
         delta_delta_theta = delta_thetas[..., None] - delta_thetas[..., None, :]

@@ -23,6 +23,7 @@ class RandomTemTAgent(AgentModel):
         step_size: float=5.0,
         lmbda: float=1.0,
         beta: float=1.0,
+        gamma: float=1.0,
         dim: int=2,
         context_window: int=256,
         buffer: int=64
@@ -45,6 +46,7 @@ class RandomTemTAgent(AgentModel):
 
         self.lmbda = lmbda
         self.beta = beta
+        self.gamma = gamma
         self.dim = dim
 
         self.dataset = []
@@ -128,7 +130,7 @@ class RandomTemTAgent(AgentModel):
                 self.prefix_length
             ))
 
-        next_location, sensory_location, sensory_predicted, elbo, sensory_error, location_disagreement, displacement_loss = (
+        next_location, sensory_location, sensory_predicted, elbo, _, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
                 self.last_sensory, self.last_location, last_action, prefix_length=self.prefix_length
             )
@@ -201,27 +203,38 @@ class RandomTemTAgent(AgentModel):
 
         print(f"DATASET: Sensory: {sensory.shape} Locations: {locations.shape} Actions: {actions.shape} Prefix Lengths: {prefix_lengths.shape}")
 
-        _, _, _, elbo, sensory_error, location_disagreement, displacement_loss = (
+        _, _, _, elbo, sensory_logprobs, sensory_error, location_disagreement, displacement_loss = (
             self.tem(
-                sensory, locations, actions, prefix_length=prefix_lengths, batch_lengths=sensory_lengths
+                sensory, locations, actions, prefix_length=prefix_lengths, batch_lengths=sensory_lengths, kl_weight=self.gamma
             )
         )
 
         loss = -elbo + self.beta * displacement_loss
-        print(f"Epoch {epoch} Step {self.t}: Loss: {loss.item():.3f} ELBO: {elbo.item():.3f} ", end="")
+        print(f"Epoch {epoch} Step {self.t}: Loss: {loss.item():.3f} ELBO: {elbo.item():.3f} Sensory Log Probs: {sensory_logprobs.item():.3f} ", end="")
         print(f"Displacement Loss: {displacement_loss.item():.3f} Sensory Error: {sensory_error.item():.3f} ", end="")
         print(f"Location Disagreement: {location_disagreement.item():.3f}")
         sys.stdout.flush()
 
-        return loss
+        return loss, location_disagreement
+
+    def print_location_comparison(self):
+        _, implied_locations = self.tem.location_metric.interpret(self.last_location[0])
+        actual_locations = torch.stack(self.actual_location_history, dim=0)
+        for i in range(len(self.last_action)):
+            print(f"Implied {implied_locations[-i-1].detach().cpu().float().numpy().tolist()}", end="\t")
+            print(f"Actual {actual_locations[-i-1].detach().cpu().float().numpy().tolist()}", end="\t")
+            print(f"Action {self.last_action[-i-1].detach().cpu().float().numpy().tolist()}")
 
     def train(self, epoch: int=None):
+
         self.tem.train()
 
-        loss = self.rerun_for_training()
+        loss, location_disagreement = self.rerun_for_training(epoch=epoch)
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+
+        # self.tem.update_geometric_scale(location_disagreement.item())
 
         assert_params_finite(self.tem)
 
@@ -229,6 +242,8 @@ class RandomTemTAgent(AgentModel):
 
         if self.last_location.shape[1] > self.context_window + self.buffer:
             self.prune()
+
+        self.tem.reset()
 
         if self.use_cuda:
             torch.cuda.empty_cache()

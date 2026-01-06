@@ -75,17 +75,22 @@ class EmbeddedLowRankGaussian(D.Distribution):
         self.logdet_E = self._log_det_E()
 
         super().__init__(batch_shape=loc.shape[:-1], event_shape=(E,), validate_args=validate_args)
-    
-    
 
     def rsample(self, sample_shape=torch.Size()):
         dtype = self.loc.dtype
         device = self.loc.device
         M, N = self.E.shape
 
+        scale = self.scale
+        if isinstance(scale, torch.Tensor):
+            while scale.ndim < len(sample_shape) + len(self.batch_shape):
+                scale = scale[None, ...]
+
+            scale = scale[..., None]
+
         # sample u ~ N(0, I_M)
         u = torch.randn(sample_shape + self.batch_shape + (M,), device=device, dtype=dtype)
-        u_scaled = (self.beta * self.scale) * u
+        u_scaled = (self.beta * scale) * u
 
         u_flat = u_scaled.reshape(-1, M)
 
@@ -104,6 +109,13 @@ class EmbeddedLowRankGaussian(D.Distribution):
         return 0.5 * torch.logdet(K).to(self.E.dtype)
     
     def log_prob(self, value: torch.Tensor, u: Optional[torch.Tensor]=None) -> torch.Tensor:
+        scale = self.scale
+        if isinstance(scale, torch.Tensor):
+            while scale.ndim < value.ndim - 1:
+                scale = scale[None, ...]
+
+        else:
+            scale = torch.tensor(scale, dtype=value.dtype)
 
         if u is None:
             M, N = self.E.shape
@@ -112,14 +124,21 @@ class EmbeddedLowRankGaussian(D.Distribution):
             while E.ndim < value.ndim + 1:
                 E = E[None, ...]
 
-            u = (E @ (value - self.loc)[..., None]).squeeze(-1) * (factor / self.scale)
+            u = (E @ (value - self.loc)[..., None]).squeeze(-1) 
+            s = scale
+            if s.ndim > 0:
+                s = s[..., None]
+            u = u * (factor / s)
             
         else:
             M = u.shape[-1]
         
         logp_u = -0.5 * u.square().sum(dim=-1) - (M/2) * math.log(2*math.pi)
-        
-        return logp_u - self.logdet_E / (self.scale ** 2)
+        # assert (logp_u <= 0.0).all(), f"logp_u: {logp_u.min().item()}, {logp_u.mean().item()}, {logp_u.max().item()}"
+        # assert (scale > 0.0).all(), f"scale: {scale.min().item()}, {scale.mean().item()}, {scale.max().item()}"
+        logp = logp_u - self.logdet_E + 2 * torch.log(scale + 1e-8)
+        # assert (logp <= 0.0).all(), f"logp: {logp.min().item()}, {logp.mean().item()}, {logp.max().item()}"
+        return logp
 
 
 class PseudoMetric(torch.nn.Module):
@@ -136,6 +155,10 @@ class PseudoMetric(torch.nn.Module):
 
         self.scale_factor = self.metric_rank ** -0.5
 
+        self.A = None
+        self.W_norm = None
+    
+    def reset(self):
         self.A = None
         self.W_norm = None
         

@@ -47,7 +47,7 @@ class TreeWorldConfig:
     simple_tem: bool = True
     max_memory_size: int = 1024
     dropout: float = 0.1
-    location_metric: str = "pseudometric"
+    location_metric: str = "fourier"
 
     # Sensory inputs
     sensory_embedding_dim: int = 1024
@@ -67,7 +67,7 @@ class TreeWorldConfig:
     heading_tolerance: float = 0.9
 
     # Trees
-    num_trees: int = 25
+    num_trees: int = 100
     tree_spacing: float = 100
     regrow_every: int = 1000
     max_fruit: int = 5
@@ -675,13 +675,13 @@ if __name__ == "__main__":
         print(f"Running tree world {i} for {s} steps...")
         world.run(s, record=(i == runs - 1), allow_death=not args.prevent_death, live_viz=viz, id=i)
         print()
-        print("Tree world run complete.")
+        print(f"Tree world run {i}complete.")
 
-        print(f"Agent health: {world.agent.health}")
-        print(f"Agent fruit eaten: {world.agent.fruit_eaten}")
-        print(f"Agent poisonous fruit eaten: {world.agent.poisonous_fruit_eaten}")
-        print(f"Agent total movement: {world.agent.total_movement}")
-        print(f"Agent final location: {torch.norm(world.agent.location).item()}")
+        print(f"{i} Agent health: {world.agent.health}")
+        print(f"{i} Agent fruit eaten: {world.agent.fruit_eaten}")
+        print(f"{i} Agent poisonous fruit eaten: {world.agent.poisonous_fruit_eaten}")
+        print(f"{i} Agent total movement: {world.agent.total_movement}")
+        print(f"{i} Agent final location: {torch.norm(world.agent.location).item()}")
 
         # if hasattr(world.agent.model, "train"):
         #     print("Training agent model")
