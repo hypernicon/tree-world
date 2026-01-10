@@ -81,7 +81,7 @@ def check_valid_location(location: torch.Tensor, batch_lengths: Optional[torch.T
 
 
 class FourierMetric(torch.nn.Module):
-    def __init__(self, location_dim: int, dim: int, scale: float=1.0, ratio: float=math.sqrt(2.0), alphas_trainable: bool=False):
+    def __init__(self, location_dim: int, dim: int, scale: float=1.0, ratio: float=math.sqrt(2.0), alphas_trainable: bool=False, scalable: bool=False):
         super().__init__()
         self.dim = dim
         self.scale = scale
@@ -101,6 +101,10 @@ class FourierMetric(torch.nn.Module):
         self.register_buffer('lattice_basis', lattice_basis)
         self.register_buffer('K', K)
         self.register_buffer('K_dagger', K_dagger)
+
+        self.scalable = scalable
+        if self.scalable:
+            self.scale_factor = torch.nn.Parameter(torch.tensor(0.0))
 
         phis = torch.empty((location_dim // 2 // (2 + 1),)).uniform_(-math.pi, math.pi)
         self.register_buffer('phis', phis) # <-- does not play into the model much, but is used for sampling
@@ -170,6 +174,9 @@ class FourierMetric(torch.nn.Module):
 
         else:
             final_squared_distances = squared_distances
+
+        if self.scalable:
+            final_squared_distances = final_squared_distances * torch.exp(self.scale_factor).square()
 
         if squared:
             return final_squared_distances
